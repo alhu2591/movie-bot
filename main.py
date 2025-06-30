@@ -15,6 +15,11 @@ from datetime import datetime, timedelta
 import html
 import logging
 
+# Import necessary Telegram types for permanent keyboard
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
+
+
 # --- إعداد التسجيل (Logging) ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -22,19 +27,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global variables for telegram imports
-Update = None
-InlineKeyboardButton = None
-InlineKeyboardMarkup = None
-Application = None
-CommandHandler = None
-ContextTypes = None
-CallbackQueryHandler = None
+# Global variables for telegram imports (now directly imported)
+# Update = None
+# InlineKeyboardButton = None
+# InlineKeyboardMarkup = None
+# Application = None
+# CommandHandler = None
+# ContextTypes = None
+# CallbackQueryHandler = None
 
 
 # --- Aggressive Package Installation and Verification ---
 def ensure_packages_installed():
-    global Update, InlineKeyboardButton, InlineKeyboardMarkup, Application, CommandHandler, ContextTypes, CallbackQueryHandler
+    # Global variables are now directly imported, no need for global declaration here
+    # global Update, InlineKeyboardButton, InlineKeyboardMarkup, Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
     required_pip_packages = [
         "requests", "beautifulsoup4", "lxml", "python-telegram-bot"
@@ -70,16 +76,17 @@ def ensure_packages_installed():
     # After mass installation/reinstallation, specifically verify telegram imports
     logger.info("Verifying critical imports...")
     try:
-        from telegram import Update as _Update, InlineKeyboardButton as _InlineKeyboardButton, InlineKeyboardMarkup as _InlineKeyboardMarkup
-        from telegram.ext import Application as _Application, CommandHandler as _CommandHandler, ContextTypes as _ContextTypes, CallbackQueryHandler as _CallbackQueryHandler
+        # These imports are now at the top of the file
+        # from telegram import Update as _Update, InlineKeyboardButton as _InlineKeyboardButton, InlineKeyboardMarkup as _InlineKeyboardMarkup
+        # from telegram.ext import Application as _Application, CommandHandler as _CommandHandler, ContextTypes as _ContextTypes, CallbackQueryHandler as _CallbackQueryHandler
         
-        Update = _Update
-        InlineKeyboardButton = _InlineKeyboardButton
-        InlineKeyboardMarkup = _InlineKeyboardMarkup
-        Application = _Application
-        CommandHandler = _CommandHandler
-        ContextTypes = _ContextTypes
-        CallbackQueryHandler = _CallbackQueryHandler
+        # Update = _Update
+        # InlineKeyboardButton = _InlineKeyboardButton
+        # InlineKeyboardMarkup = _InlineKeyboardMarkup
+        # Application = _Application
+        # CommandHandler = _CommandHandler
+        # ContextTypes = _ContextTypes
+        # CallbackQueryHandler = _CallbackQueryHandler
 
         logger.info("✅ Core Python-Telegram-Bot imports successful.")
     except ImportError as e:
@@ -93,7 +100,7 @@ ensure_packages_installed()
 
 
 # --- إعدادات البوت ---
-TOKEN = "7576844775:AAE8pDuHLQOz3HVOUoxIv3a_e685Ic2VZH4" 
+TOKEN = "7576844775:AAHdO2WNOetUhty_RlADiTi4QhyNXZnM2Ds" 
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") # متغير بيئة لـ ID المشرف
 
 # --- إعداد خادم keep_alive ---
@@ -1009,13 +1016,14 @@ async def self_ping_async():
     except requests.exceptions.RequestException as e:
         logger.error(f"❌ Self-ping failed: {e}")
 
-# --- دالة مساعدة لإرسال/تعديل رسالة القائمة الرئيسية ---
-async def main_menu_internal(chat_id: int, context: ContextTypes.DEFAULT_TYPE, message_id: int = None, edit_mode: bool = False, user_first_name: str = "عزيزي المستخدم"):
+# --- دالة مساعدة لإرسال رسالة القائمة الرئيسية مع الأزرار الدائمة ---
+async def main_menu_internal(chat_id: int, context: ContextTypes.DEFAULT_TYPE, user_first_name: str = "عزيزي المستخدم"):
     keyboard = [
-        [InlineKeyboardButton("⚙️ إعدادات التنبيهات", callback_data='settings_command')],
-        [InlineKeyboardButton("🔄 تحديث الآن", callback_data='manual_update_command')] 
+        [KeyboardButton("⚙️ إعدادات التنبيهات")],
+        [KeyboardButton("🔄 تحديث الآن")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    # استخدام ReplyKeyboardMarkup لجعل الأزرار دائمة
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
     welcome_msg = (
         f"🎉 مرحباً {user_first_name}!\n"
@@ -1025,21 +1033,9 @@ async def main_menu_internal(chat_id: int, context: ContextTypes.DEFAULT_TYPE, m
         "⏰ سيصلك تحديث بالأفلام الجديدة كل 6 ساعات تلقائياً.\n" 
         "استخدم الأزرار أدناه للتحكم في البوت."
     )
+    # إرسال رسالة جديدة مع لوحة المفاتيح الدائمة
+    await context.bot.send_message(chat_id=chat_id, text=welcome_msg, parse_mode='HTML', reply_markup=reply_markup)
 
-    if edit_mode and message_id:
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=welcome_msg,
-                parse_mode='HTML',
-                reply_markup=reply_markup
-            )
-        except Exception as e:
-            logger.error(f"خطأ في تعديل رسالة القائمة الرئيسية للمستخدم {chat_id}: {e}")
-            await context.bot.send_message(chat_id=chat_id, text=welcome_msg, parse_mode='HTML', reply_markup=reply_markup)
-    else:
-        await context.bot.send_message(chat_id=chat_id, text=welcome_msg, parse_mode='HTML', reply_markup=reply_markup)
 
 # --- معالج أمر /settings (يمكن استدعاؤه لتعديل الرسالة أو إرسالها لأول مرة) ---
 async def settings_command_internal(chat_id: int, context: ContextTypes.DEFAULT_TYPE, message_id: int = None, edit_mode: bool = False):
@@ -1085,6 +1081,7 @@ async def settings_command_internal(chat_id: int, context: ContextTypes.DEFAULT_
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     add_user(user.id, user.username, user.first_name, user.last_name) 
+    # استدعاء main_menu_internal لإظهار الأزرار الدائمة
     await main_menu_internal(user.id, context, user_first_name=user.first_name)
 
 async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1094,6 +1091,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
     chat_id = query.message.chat_id 
 
     if query.data == 'settings_command':
+        # هذا لن يتم استدعاؤه مباشرة من الأزرار الدائمة، بل من زر "رجوع" في قائمة الإعدادات
         await settings_command_internal(chat_id, context, query.message.message_id, edit_mode=True) 
     elif query.data.startswith('toggle_'):
         pref_type = query.data.replace('toggle_', '')
@@ -1106,24 +1104,39 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             await context.bot.send_message(chat_id=chat_id, text="حدث خطأ أثناء تحديث التفضيلات.")
     elif query.data == 'back_to_main_menu':
         user = update.effective_user
-        await main_menu_internal(chat_id, context, query.message.message_id, edit_mode=True, user_first_name=user.first_name)
-    elif query.data == 'manual_update_command': 
-        await query.message.reply_text("بدء تحديث الأفلام يدوياً... قد يستغرق الأمر بضع دقائق.", parse_mode='HTML')
+        # عند العودة من الإعدادات، نعرض القائمة الرئيسية بالأزرار الدائمة
+        await main_menu_internal(chat_id, context, user_first_name=user.first_name)
+        # نحذف رسالة الإعدادات القديمة لتنظيف الدردشة
         try:
-            await send_new_movies(context)
-            await query.message.reply_text("✅ تم الانتهاء من التحديث اليدوي للأفلام.", parse_mode='HTML')
+            await context.bot.delete_message(chat_id=chat_id, message_id=query.message.message_id)
         except Exception as e:
-            logger.exception("خطأ فادح أثناء التحديث اليدوي للأفلام.")
-            error_message_for_user = f"❌ حدث خطأ أثناء التحديث اليدوي للأفلام. التفاصيل: <code>{html.escape(str(e))[:150]}...</code>"
-            await query.message.reply_text(error_message_for_user, parse_mode='HTML')
-            if ADMIN_CHAT_ID:
-                try:
-                    await context.bot.send_message(
-                        chat_id=ADMIN_CHAT_ID,
-                        text=f"⚠️ خطأ في التحديث اليدوي لبوت الأفلام: \n<code>{html.escape(str(e))}</code>",
-                        parse_mode='HTML'
-                    )
-                except Exception as admin_e:
+            logger.warning(f"Failed to delete settings message: {e}")
+
+# --- معالج الزر الدائم "إعدادات التنبيهات" ---
+async def handle_settings_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    # إرسال رسالة الإعدادات الجديدة (مع الأزرار الداخلية)
+    await settings_command_internal(chat_id, context)
+
+# --- معالج الزر الدائم "تحديث الآن" ---
+async def handle_manual_update_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    await update.message.reply_text("بدء تحديث الأفلام يدوياً... قد يستغرق الأمر بضع دقائق.", parse_mode='HTML')
+    try:
+        await send_new_movies(context)
+        await update.message.reply_text("✅ تم الانتهاء من التحديث اليدوي للأفلام.", parse_mode='HTML')
+    except Exception as e:
+        logger.exception("خطأ فادح أثناء التحديث اليدوي للأفلام.")
+        error_message_for_user = f"❌ حدث خطأ أثناء التحديث اليدوي للأفلام. التفاصيل: <code>{html.escape(str(e))[:150]}...</code>"
+        await update.message.reply_text(error_message_for_user, parse_mode='HTML')
+        if ADMIN_CHAT_ID:
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text=f"⚠️ خطأ في التحديث اليدوي لبوت الأفلام: \n<code>{html.escape(str(e))}</code>",
+                    parse_mode='HTML'
+                )
+            except Exception as admin_e:
                     logger.error(f"فشل إرسال رسالة الخطأ إلى المشرف: {admin_e}")
 
 
@@ -1218,7 +1231,12 @@ def main():
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("sitestatus", show_site_status)) # Admin command
-    application.add_handler(CallbackQueryHandler(button_callback_handler)) 
+    application.add_handler(CallbackQueryHandler(button_callback_handler)) # For inline buttons (settings menu)
+
+    # New handlers for permanent keyboard buttons
+    application.add_handler(MessageHandler(filters.Regex(r"^⚙️ إعدادات التنبيهات$"), handle_settings_button))
+    application.add_handler(MessageHandler(filters.Regex(r"^🔄 تحديث الآن$"), handle_manual_update_button))
+
 
     threading.Thread(target=schedule_job, args=(application,), daemon=True).start()
 
