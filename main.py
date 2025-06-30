@@ -93,7 +93,7 @@ ensure_packages_installed()
 
 
 # --- إعدادات البوت ---
-TOKEN = "7576844775:AAFBtWXaQZDKe5z2Q3nLQBW3utNd9wgocUw" 
+TOKEN = "7576844775:AAE8pDuHLQOz3HVOUoxIv3a_e685Ic2VZH4" 
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") # متغير بيئة لـ ID المشرف
 
 # --- إعداد خادم keep_alive ---
