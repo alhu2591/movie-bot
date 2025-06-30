@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import subprocess
 import sys
-import os
+import os # Import os for environment variables
 import re
 import sqlite3
 import threading
@@ -12,8 +12,8 @@ from bs4 import BeautifulSoup
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from flask import Flask
-from urllib.parse import urlparse, urlunparse
-from playwright.async_api import async_playwright
+from urllib.parse import urlparse, urlunparse # استيراد الوحدات اللازمة
+from playwright.async_api import async_playwright # استيراد مكتبة Playwright
 
 # --- Logging Setup ---
 import logging
@@ -53,27 +53,15 @@ def ensure_packages_installed():
         # محاولة استيراد المكتبات الأساسية
         import bs4
         import lxml
-        import telegram # تم تغيير هذا السطر من 'python_telegram_bot' إلى 'telegram'
+        import telegram
         import aiohttp
         import schedule
-        import playwright # تم إضافة playwright للتحقق
+        import playwright
         logger.info("✅ جميع مكتبات Python الأساسية قابلة للاستيراد.")
     except ImportError as e:
         logger.critical(f"❌ خطأ حرج في الاستيراد: {e}")
         logger.critical("واحد أو أكثر من المكتبات المطلوبة غير مثبت. يرجى التأكد من أن 'requirements.txt' صحيح وأن الاعتمادات مثبتة.")
         sys.exit(1) # الخروج إذا فشل الاستيراد الحرج
-
-    try:
-        # تم نقل هذا الاستيراد إلى هنا لضمان أن 'telegram' موجود قبل محاولة استيراد مكوناته
-        # هذا يحل مشكلة محتملة إذا كان python-telegram-bot غير مثبت بشكل صحيح
-        from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-        from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
-        logger.info("✅ استيراد مكونات Python-Telegram-Bot الأساسية بنجاح.")
-    except ImportError as e:
-        logger.critical(f"❌ خطأ حرج في الاستيراد لمكونات python-telegram-bot: {e}")
-        logger.critical("هذا يعني عادةً أن 'python-telegram-bot' غير مثبت بشكل صحيح أو أن هناك حزمة 'telegram' متعارضة موجودة.")
-        logger.critical("تأكد من أنك تستخدم إصدار Python متوافق (مثل 3.11 أو 3.12) وأن 'python-telegram-bot==20.7' موجود في requirements.txt.")
-        sys.exit(1)
 
 # استدعاء الدالة عند بدء تشغيل البوت
 ensure_packages_installed()
@@ -82,11 +70,11 @@ ensure_packages_installed()
 def install_playwright_browsers():
     try:
         logger.info("Attempting to install Playwright browsers...")
+        # استخدام sys.executable -m لضمان استخدام Playwright من البيئة الافتراضية
         # استخدام --with-deps لضمان تثبيت جميع الاعتمادات الضرورية
-        # استخدام sys.executable لضمان استخدام Python الصحيح في البيئة الافتراضية
         result = subprocess.run([sys.executable, "-m", "playwright", "install", "--with-deps"], capture_output=True, text=True, check=True)
         logger.info("✅ تم تثبيت متصفحات Playwright بنجاح.")
-        logger.debug(result.stdout)
+        logger.debug(result.stdout) # استخدام debug لإخراج تفاصيل التثبيت
     except subprocess.CalledProcessError as e:
         logger.critical(f"❌ خطأ في تثبيت متصفحات Playwright:\n{e.stderr}")
         sys.exit(1) # الخروج إذا فشل تثبيت المتصفح
@@ -96,6 +84,7 @@ def install_playwright_browsers():
 
 # استدعاء الدالة عند بدء تشغيل البوت
 install_playwright_browsers()
+
 
 # --- إعدادات البوت ---
 TOKEN = os.getenv("BOT_TOKEN", "7576844775:AAGyos4JkSNiiiwQ5oeCJdAw-2ajMkVdUUA") # تم تحديث هذا الرمز برمز البوت الجديد الخاص بك.
@@ -125,7 +114,7 @@ def init_db():
         c.execute("ALTER TABLE movies ADD COLUMN image_url TEXT")
     except sqlite3.OperationalError as e:
         if "duplicate column name" not in str(e):
-            logger.error(f"Error altering table: {e}")
+            logger.error(f"Error altering table: {e}") # استخدام logger
     
     c.execute('''CREATE TABLE IF NOT EXISTS users
                 (user_id INTEGER PRIMARY KEY,
@@ -164,7 +153,7 @@ def parse_wecima(soup):
         try:
             link_tag = item.select_one("a")
             if not link_tag or not link_tag.get("href"):
-                logger.debug(f"Wecima: Skipping item due to missing link or href: {item.prettify()}")
+                logger.debug(f"Wecima: Skipping item due to missing link or href: {item.prettify()}") # استخدام logger
                 continue
             link = link_tag["href"]
             
@@ -176,7 +165,7 @@ def parse_wecima(soup):
                 else: # It's an img tag
                     title = title_tag.get("alt", "N/A")
             if not title or title == "N/A":
-                logger.debug(f"Wecima: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                logger.debug(f"Wecima: Title not found or N/A for link {link} - Item HTML: {item.prettify()}") # استخدام logger
                 title = "عنوان غير متوفر" # Provide a default title
 
             image_url = None
@@ -191,12 +180,12 @@ def parse_wecima(soup):
                 if img_tag:
                     image_url = img_tag.get("data-src") or img_tag.get("src")
             if not image_url:
-                logger.debug(f"Wecima: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                logger.debug(f"Wecima: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}") # استخدام logger
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image" # Placeholder
 
             movies.append({"title": title, "url": link, "image_url": image_url, "source": "Wecima"})
         except Exception as e:
-            logger.error(f"❌ Error parsing Wecima item: {e} - Item HTML causing error: {item.prettify()}")
+            logger.error(f"❌ Error parsing Wecima item: {e} - Item HTML causing error: {item.prettify()}") # استخدام logger
             continue
     return movies
 
@@ -206,25 +195,25 @@ def parse_topcinema(soup):
         try:
             link_tag = item.select_one("a")
             if not link_tag or not link_tag.get("href"):
-                logger.debug(f"TopCinema: Skipping item due to missing link or href: {item.prettify()}")
+                logger.debug(f"TopCinema: Skipping item due to missing link or href: {item.prettify()}") # استخدام logger
                 continue
             link = link_tag["href"]
             
             title_tag = item.select_one("h2.Title")
             title = title_tag.get_text(strip=True) if title_tag else "N/A"
             if not title or title == "N/A":
-                logger.debug(f"TopCinema: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                logger.debug(f"TopCinema: Title not found or N/A for link {link} - Item HTML: {item.prettify()}") # استخدام logger
                 title = "عنوان غير متوفر"
             
             img_tag = item.select_one("img")
             image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
             if not image_url:
-                logger.debug(f"TopCinema: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                logger.debug(f"TopCinema: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}") # استخدام logger
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
             
             movies.append({"title": title, "url": link, "image_url": image_url, "source": "TopCinema"})
         except Exception as e:
-            logger.error(f"❌ Error parsing TopCinema item: {e} - Item HTML causing error: {item.prettify()}")
+            logger.error(f"❌ Error parsing TopCinema item: {e} - Item HTML causing error: {item.prettify()}") # استخدام logger
             continue
     return movies
 
@@ -234,7 +223,7 @@ def parse_cimaclub(soup):
         try:
             link_tag = item.select_one("a.recent--block")
             if not link_tag or not link_tag.get("href"):
-                logger.debug(f"CimaClub: Skipping item due to missing link or href: {item.prettify()}")
+                logger.debug(f"CimaClub: Skipping item due to missing link or href: {item.prettify()}") # استخدام logger
                 continue
             link = link_tag["href"]
             
@@ -262,18 +251,18 @@ def parse_cimaclub(soup):
                     title = extracted_title
 
             if title == "عنوان غير متوفر":
-                logger.debug(f"CimaClub: Could not extract title for link {link} - Item HTML: {item.prettify()}")
+                logger.debug(f"CimaClub: Could not extract title for link {link} - Item HTML: {item.prettify()}") # استخدام logger
                 title = "عنوان غير متوفر" # Ensure default if all attempts fail
 
             img_tag = item.select_one("div.Poster img")
             image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
             if not image_url:
-                logger.debug(f"CimaClub: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                logger.debug(f"CimaClub: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}") # استخدام logger
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image" # Placeholder
             
             movies.append({"title": title, "url": link, "image_url": image_url, "source": "CimaClub"})
         except Exception as e:
-            logger.error(f"❌ Error parsing CimaClub item: {e} - Item HTML causing error: {item.prettify()}")
+            logger.error(f"❌ Error parsing CimaClub item: {e} - Item HTML causing error: {item.prettify()}") # استخدام logger
             continue
     return movies
 
@@ -283,25 +272,25 @@ def parse_tuktukcima(soup):
         try:
             link_tag = item.select_one("a")
             if not link_tag or not link_tag.get("href"):
-                logger.debug(f"TukTukCima: Skipping item due to missing link or href: {item.prettify()}")
+                logger.debug(f"TukTukCima: Skipping item due to missing link or href: {item.prettify()}") # استخدام logger
                 continue
             link = link_tag["href"]
             
             title_tag = item.select_one("h2.Title")
             title = title_tag.get_text(strip=True) if title_tag else "N/A"
             if not title or title == "N/A":
-                logger.debug(f"TukTukCima: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                logger.debug(f"TukTukCima: Title not found or N/A for link {link} - Item HTML: {item.prettify()}") # استخدام logger
                 title = "عنوان غير متوفر"
             
             img_tag = item.select_one("img")
             image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
             if not image_url:
-                logger.debug(f"TukTukCima: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                logger.debug(f"TukTukCima: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}") # استخدام logger
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
             
             movies.append({"title": title, "url": link, "image_url": image_url, "source": "TukTukCima"})
         except Exception as e:
-            logger.error(f"❌ Error parsing TukTukCima item: {e} - Item HTML causing error: {item.prettify()}")
+            logger.error(f"❌ Error parsing TukTukCima item: {e} - Item HTML causing error: {item.prettify()}") # استخدام logger
             continue
     return movies
 
@@ -311,7 +300,7 @@ def parse_egy_onl(soup):
         try:
             link_tag = item.select_one("a")
             if not link_tag or not link_tag.get("href"):
-                logger.debug(f"EgyBest: Skipping item due to missing link or href: {item.prettify()}")
+                logger.debug(f"EgyBest: Skipping item due to missing link or href: {item.prettify()}") # استخدام logger
                 continue
             link = link_tag["href"]
             
@@ -319,17 +308,17 @@ def parse_egy_onl(soup):
             title_tag = item.select_one("img")
             title = title_tag.get("alt", "N/A") if title_tag else "N/A"
             if not title or title == "N/A":
-                logger.debug(f"EgyBest: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                logger.debug(f"EgyBest: Title not found or N/A for link {link} - Item HTML: {item.prettify()}") # استخدام logger
                 title = "عنوان غير متوفر"
             
             image_url = title_tag.get("data-src") or title_tag.get("src") if title_tag else None
             if not image_url:
-                logger.debug(f"EgyBest: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                logger.debug(f"EgyBest: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}") # استخدام logger
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
             
             movies.append({"title": title, "url": link, "image_url": image_url, "source": "EgyBest"})
         except Exception as e:
-            logger.error(f"❌ Error parsing EgyBest item: {e} - Item HTML causing error: {item.prettify()}")
+            logger.error(f"❌ Error parsing EgyBest item: {e} - Item HTML causing error: {item.prettify()}") # استخدام logger
             continue
     return movies
 
@@ -340,7 +329,7 @@ def parse_mycima(soup):
         try:
             link_tag = item.select_one("a")
             if not link_tag or not link_tag.get("href"):
-                logger.debug(f"MyCima: Skipping item due to missing link or href: {item.prettify()}")
+                logger.debug(f"MyCima: Skipping item due to missing link or href: {item.prettify()}") # استخدام logger
                 continue
             link = link_tag["href"]
             
@@ -352,7 +341,7 @@ def parse_mycima(soup):
                 else: # It's an img tag
                     title = title_tag.get("alt", "N/A")
             if not title or title == "N/A":
-                logger.debug(f"MyCima: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                logger.debug(f"MyCima: Title not found or N/A for link {link} - Item HTML: {item.prettify()}") # استخدام logger
                 title = "عنوان غير متوفر"
 
             image_url = None
@@ -367,12 +356,12 @@ def parse_mycima(soup):
                 if img_tag:
                     image_url = img_tag.get("data-src") or img_tag.get("src")
             if not image_url:
-                logger.debug(f"MyCima: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                logger.debug(f"MyCima: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}") # استخدام logger
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
 
             movies.append({"title": title, "url": link, "image_url": image_url, "source": "MyCima"})
         except Exception as e:
-            logger.error(f"❌ Error parsing MyCima item: {e} - Item HTML causing error: {item.prettify()}")
+            logger.error(f"❌ Error parsing MyCima item: {e} - Item HTML causing error: {item.prettify()}") # استخدام logger
             continue
     return movies
 
@@ -382,7 +371,7 @@ def parse_akoam(soup):
         try:
             link_tag = item.select_one("a")
             if not link_tag or not link_tag.get("href"):
-                logger.debug(f"Akoam: Skipping item due to missing link or href: {item.prettify()}")
+                logger.debug(f"Akoam: Skipping item due to missing link or href: {item.prettify()}") # استخدام logger
                 continue
             link = link_tag["href"]
             
@@ -394,18 +383,18 @@ def parse_akoam(soup):
                 else: # It's an img tag
                     title = title_tag.get("alt", "N/A")
             if not title or title == "N/A":
-                logger.debug(f"Akoam: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                logger.debug(f"Akoam: Title not found or N/A for link {link} - Item HTML: {item.prettify()}") # استخدام logger
                 title = "عنوان غير متوفر"
             
             img_tag = item.select_one("img")
             image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
             if not image_url:
-                logger.debug(f"Akoam: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                logger.debug(f"Akoam: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}") # استخدام logger
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
             
             movies.append({"title": title, "url": link, "image_url": image_url, "source": "Akoam"})
         except Exception as e:
-            logger.error(f"❌ Error parsing Akoam item: {e} - Item HTML causing error: {item.prettify()}")
+            logger.error(f"❌ Error parsing Akoam item: {e} - Item HTML causing error: {item.prettify()}") # استخدام logger
             continue
     return movies
 
@@ -415,25 +404,25 @@ def parse_shahid4u(soup):
         try:
             link_tag = item.select_one("a.MovieBlock") # Specific anchor tag
             if not link_tag or not link_tag.get("href"):
-                logger.debug(f"Shahid4u: Skipping item due to missing link or href: {item.prettify()}")
+                logger.debug(f"Shahid4u: Skipping item due to missing link or href: {item.prettify()}") # استخدام logger
                 continue
             link = link_tag["href"]
             
             title_tag = item.select_one("h2.MovieTitle")
             title = title_tag.get_text(strip=True) if title_tag else "N/A"
             if not title or title == "N/A":
-                logger.debug(f"Shahid4u: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                logger.debug(f"Shahid4u: Title not found or N/A for link {link} - Item HTML: {item.prettify()}") # استخدام logger
                 title = "عنوان غير متوفر"
             
             img_tag = item.select_one("img")
             image_url = img_tag.get("src") if img_tag else None # Shahid4u يستخدم src مباشرة
             if not image_url:
-                logger.debug(f"Shahid4u: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                logger.debug(f"Shahid4u: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}") # استخدام logger
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
             
             movies.append({"title": title, "url": link, "image_url": image_url, "source": "Shahid4u"})
         except Exception as e:
-            logger.error(f"❌ Error parsing Shahid4u item: {e} - Item HTML causing error: {item.prettify()}")
+            logger.error(f"❌ Error parsing Shahid4u item: {e} - Item HTML causing error: {item.prettify()}") # استخدام logger
             continue
     return movies
 
@@ -443,25 +432,25 @@ def parse_aflamco(soup):
         try:
             link_tag = item.select_one("a")
             if not link_tag or not link_tag.get("href"):
-                logger.debug(f"Aflamco: Skipping item due to missing link or href: {item.prettify()}")
+                logger.debug(f"Aflamco: Skipping item due to missing link or href: {item.prettify()}") # استخدام logger
                 continue
             link = link_tag["href"]
             
             title_tag = item.select_one("h2.ModuleTitle")
             title = title_tag.get_text(strip=True) if title_tag else "N/A"
             if not title or title == "N/A":
-                logger.debug(f"Aflamco: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                logger.debug(f"Aflamco: Title not found or N/A for link {link} - Item HTML: {item.prettify()}") # استخدام logger
                 title = "عنوان غير متوفر"
             
             img_tag = item.select_one("img")
             image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
             if not image_url:
-                logger.debug(f"Aflamco: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                logger.debug(f"Aflamco: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}") # استخدام logger
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
             
             movies.append({"title": title, "url": link, "image_url": image_url, "source": "Aflamco"})
         except Exception as e:
-            logger.error(f"❌ Error parsing Aflamco item: {e} - Item HTML causing error: {item.prettify()}")
+            logger.error(f"❌ Error parsing Aflamco item: {e} - Item HTML causing error: {item.prettify()}") # استخدام logger
             continue
     return movies
 
@@ -471,25 +460,25 @@ def parse_cima4u(soup):
         try:
             link_tag = item.select_one("a")
             if not link_tag or not link_tag.get("href"):
-                logger.debug(f"Cima4u: Skipping item due to missing link or href: {item.prettify()}")
+                logger.debug(f"Cima4u: Skipping item due to missing link or href: {item.prettify()}") # استخدام logger
                 continue
             link = link_tag["href"]
             
             title_tag = item.select_one("h2.Title")
             title = title_tag.get_text(strip=True) if title_tag else "N/A"
             if not title or title == "N/A":
-                logger.debug(f"Cima4u: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                logger.debug(f"Cima4u: Title not found or N/A for link {link} - Item HTML: {item.prettify()}") # استخدام logger
                 title = "عنوان غير متوفر"
             
             img_tag = item.select_one("img")
             image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
             if not image_url:
-                logger.debug(f"Cima4u: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                logger.debug(f"Cima4u: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}") # استخدام logger
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
             
             movies.append({"title": title, "url": link, "image_url": image_url, "source": "Cima4u"})
         except Exception as e:
-            logger.error(f"❌ Error parsing Cima4u item: {e} - Item HTML causing error: {item.prettify()}")
+            logger.error(f"❌ Error parsing Cima4u item: {e} - Item HTML causing error: {item.prettify()}") # استخدام logger
             continue
     return movies
 
@@ -499,25 +488,25 @@ def parse_fushaar(soup):
         try:
             link_tag = item.select_one("a")
             if not link_tag or not link_tag.get("href"):
-                logger.debug(f"Fushaar: Skipping item due to missing link or href: {item.prettify()}")
+                logger.debug(f"Fushaar: Skipping item due to missing link or href: {item.prettify()}") # استخدام logger
                 continue
             link = link_tag["href"]
             
             title_tag = item.select_one("h2.Title")
             title = title_tag.get_text(strip=True) if title_tag else "N/A"
             if not title or title == "N/A":
-                logger.debug(f"Fushaar: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                logger.debug(f"Fushaar: Title not found or N/A for link {link} - Item HTML: {item.prettify()}") # استخدام logger
                 title = "عنوان غير متوفر"
             
             img_tag = item.select_one("img")
             image_url = img_tag.get("data-lazy-src") or img_tag.get("src") if img_tag else None
             if not image_url:
-                logger.debug(f"Fushaar: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                logger.debug(f"Fushaar: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}") # استخدام logger
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
             
             movies.append({"title": title, "url": link, "image_url": image_url, "source": "Fushaar"})
         except Exception as e:
-            logger.error(f"❌ Error parsing Fushaar item: {e} - Item HTML causing error: {item.prettify()}")
+            logger.error(f"❌ Error parsing Fushaar item: {e} - Item HTML causing error: {item.prettify()}") # استخدام logger
             continue
     return movies
 
@@ -527,25 +516,25 @@ def parse_aflaam(soup):
         try:
             link_tag = item.select_one("a.box")
             if not link_tag or not link_tag.get("href"):
-                logger.debug(f"Aflaam: Skipping item due to missing link or href: {item.prettify()}")
+                logger.debug(f"Aflaam: Skipping item due to missing link or href: {item.prettify()}") # استخدام logger
                 continue
             link = link_tag["href"]
             
             title_tag = item.select_one("h3.entry-title")
             title = title_tag.get_text(strip=True) if title_tag else "N/A"
             if not title or title == "N/A":
-                logger.debug(f"Aflaam: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                logger.debug(f"Aflaam: Title not found or N/A for link {link} - Item HTML: {item.prettify()}") # استخدام logger
                 title = "عنوان غير متوفر"
             
             img_tag = item.select_one("picture img.lazy") 
             image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
             if not image_url:
-                logger.debug(f"Aflaam: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                logger.debug(f"Aflaam: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}") # استخدام logger
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
             
             movies.append({"title": title, "url": link, "image_url": image_url, "source": "Aflaam"})
         except Exception as e:
-            logger.error(f"❌ Error parsing Aflaam item: {e} - Item HTML causing error: {item.prettify()}")
+            logger.error(f"❌ Error parsing Aflaam item: {e} - Item HTML causing error: {item.prettify()}") # استخدام logger
             continue
     return movies
 
@@ -573,7 +562,7 @@ SCRAPERS = [
 # --- جلب الأفلام من موقع واحد (المعدلة لاستخدام Playwright) ---
 async def scrape_site_async(scraper, page): # تأخذ page بدلاً من driver
     try:
-        logger.info(f"جارٍ فحص موقع: {scraper['name']}")
+        logger.info(f"جارٍ فحص موقع: {scraper['name']}") # استخدام logger
         # الانتقال إلى الصفحة والانتظار حتى تحميل المحتوى
         await page.goto(scraper["url"], wait_until="domcontentloaded", timeout=60000) 
 
@@ -589,14 +578,14 @@ async def scrape_site_async(scraper, page): # تأخذ page بدلاً من driv
 
         # طباعة عدد الأفلام المستخرجة
         if movies:
-            logger.info(f"✅ {len(movies)} فيلم تم استخراجه من {scraper['name']}")
+            logger.info(f"✅ {len(movies)} فيلم تم استخراجه من {scraper['name']}") # استخدام logger
         else:
-            logger.warning(f"⚠️ لم يتم العثور على أفلام في {scraper['name']} باستخدام المحددات الحالية. يرجى التحقق من debug_{scraper['name']}.html")
+            logger.warning(f"⚠️ لم يتم العثور على أفلام في {scraper['name']} باستخدام المحددات الحالية. يرجى التحقق من debug_{scraper['name']}.html") # استخدام logger
 
         return movies
 
     except Exception as e:
-        logger.error(f"❌ خطأ غير متوقع أثناء تحليل {scraper['name']}: {e}")
+        logger.error(f"❌ خطأ غير متوقع أثناء تحليل {scraper['name']}: {e}") # استخدام logger
         return []
 
 # --- جلب الأفلام من جميع المواقع (المعدلة لاستخدام Playwright) ---
@@ -651,23 +640,23 @@ async def scrape_movies_async(): # تحويل الدالة لتصبح async
                         # هذا يحدث إذا كان هناك فيلم بنفس الـ URL موجود بالفعل (UNIQUE constraint)
                         pass
                     except Exception as e:
-                        logger.error(f"  ❌ خطأ في إضافة فيلم من {scraper['name']} ({movie.get('title', 'N/A')}): {e}")
+                        logger.error(f"  ❌ خطأ في إضافة فيلم من {scraper['name']} ({movie.get('title', 'N/A')}): {e}") # استخدام logger
                 
                 if added_count > 0:
-                    logger.info(f"  ✅ تمت إضافة {added_count} أفلام جديدة من {scraper['name']}")
+                    logger.info(f"  ✅ تمت إضافة {added_count} أفلام جديدة من {scraper['name']}") # استخدام logger
                 total_added_count += added_count
                 conn.commit()
 
             conn.close()
 
     except Exception as e:
-        logger.critical(f"⚠️ خطأ أثناء جمع الأفلام: {e}") 
+        logger.critical(f"⚠️ خطأ أثناء جمع الأفلام: {e}") # استخدام logger
     finally:
         if browser:
             await browser.close() # تأكد من إغلاق المتصفح
-            logger.info("متصفح Playwright تم إغلاقه.")
+            logger.info("متصفح Playwright تم إغلاقه.") # استخدام logger
             
-    logger.info(f"✅ تمت إضافة {total_added_count} فيلم جديد في هذه الجولة.") 
+    logger.info(f"✅ تمت إضافة {total_added_count} فيلم جديد في هذه الجولة.") # استخدام logger
     return new_movies
 
 # --- إرسال الأفلام الجديدة للمستخدمين ---
@@ -675,7 +664,7 @@ async def send_new_movies(context: ContextTypes.DEFAULT_TYPE):
     # استدعاء الدالة غير المتزامنة لكشط الأفلام
     new_movies = await scrape_movies_async() 
     if not new_movies:
-        logger.info("لا توجد أفلام جديدة للإرسال.")
+        logger.info("لا توجد أفلام جديدة للإرسال.") # استخدام logger
         return
 
     conn = sqlite3.connect('movies.db')
@@ -715,7 +704,7 @@ async def send_new_movies(context: ContextTypes.DEFAULT_TYPE):
             )
             await asyncio.sleep(0.3) # تأخير بسيط لتجنب حدود معدل Telegram API
         except Exception as e:
-            logger.error(f"❌ خطأ في إرسال الأفلام للمستخدم {user_id}: {e}")
+            logger.error(f"❌ خطأ في إرسال الأفلام للمستخدم {user_id}: {e}") # استخدام logger
 
 # --- أمر بدء البوت ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -806,12 +795,12 @@ def schedule_job(application):
             # تشغيل الدالة غير المتزامنة send_new_movies
             loop.run_until_complete(send_new_movies(application))
         except Exception as e:
-            logger.error(f"خطأ في المهمة المجدولة: {e}")
+            logger.error(f"خطأ في المهمة المجدولة: {e}") # استخدام logger
 
     schedule.every(1).hours.do(run_async_task_wrapper)
     
-    logger.info("بدء عملية جمع الأفلام الأولية...")
-    run_async_task_wrapper()  
+    logger.info("بدء عملية جمع الأفلام الأولية...") # استخدام logger
+    run_async_task_wrapper()  # Initial run
 
     while True:
         schedule.run_pending()
@@ -820,7 +809,7 @@ def schedule_job(application):
 # --- تشغيل البوت ---
 def main():
     init_db()
-    logger.info("تم تهيئة قاعدة البيانات")
+    logger.info("تم تهيئة قاعدة البيانات") # استخدام logger
 
     application = Application.builder().token(TOKEN).build()
     
@@ -830,10 +819,10 @@ def main():
 
     threading.Thread(target=schedule_job, args=(application,), daemon=True).start()
 
-    logger.info("✅ البوت يعمل الآن مع 12 موقع سينمائي")
-    logger.info("⏱️ تحديث الأفلام كل ساعة تلقائياً")
-    logger.info("🌐 خادم Keep-Alive يعمل على المنفذ 8080")
-    logger.info("🔄 استخدم /update لتحديث يدوي")
+    logger.info("✅ البوت يعمل الآن مع 12 موقع سينمائي") # استخدام logger
+    logger.info("⏱️ تحديث الأفلام كل ساعة تلقائياً") # استخدام logger
+    logger.info("🌐 خادم Keep-Alive يعمل على المنفذ 8080") # استخدام logger
+    logger.info("🔄 استخدم /update لتحديث يدوي") # استخدام logger
     application.run_polling()
 
 if __name__ == '__main__':
