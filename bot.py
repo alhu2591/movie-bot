@@ -8,11 +8,12 @@ import schedule
 import time
 import asyncio
 from bs4 import BeautifulSoup
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton # تم إضافة استيراد الأزرار
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters # تم إضافة استيراد المعالجات
 from flask import Flask
 from urllib.parse import urlparse, urlunparse
 from playwright.async_api import async_playwright
+import site # تم إضافة هذا الاستيراد لتحسين اكتشاف مسار المكتبات
 
 # --- Logging Setup ---
 import logging
@@ -25,16 +26,12 @@ logger = logging.getLogger(__name__)
 # --- Add virtual environment site-packages to sys.path ---
 # This helps ensure all installed packages are discoverable at runtime.
 try:
-    # Get the path to the virtual environment's site-packages
-    venv_path = os.path.join(os.path.dirname(sys.executable), '..', 'lib')
-    # Find the pythonX.Y/site-packages directory
-    for item in os.listdir(venv_path):
-        if item.startswith('python') and os.path.isdir(os.path.join(venv_path, item, 'site-packages')):
-            site_packages_path = os.path.join(venv_path, item, 'site-packages')
-            if site_packages_path not in sys.path:
-                sys.path.insert(0, site_packages_path)
-                logger.info(f"Added {site_packages_path} to sys.path")
-            break
+    # Get all site-packages directories using the 'site' module
+    site_packages_dirs = site.getsitepackages()
+    for sp_dir in site_packages_dirs:
+        if sp_dir not in sys.path:
+            sys.path.insert(0, sp_dir)
+            logger.info(f"Added {sp_dir} to sys.path")
 except Exception as e:
     logger.warning(f"Could not automatically add site-packages to sys.path: {e}")
 
@@ -48,7 +45,6 @@ def ensure_packages_installed():
     logger.info("Verifying critical imports...")
     try:
         # محاولة استيراد المكتبات الأساسية
-        # تم إزالة 'requests' حيث أنها ليست مستخدمة وتسبب خطأ ModuleNotFoundError
         import beautifulsoup4
         import lxml
         import python_telegram_bot
@@ -62,6 +58,8 @@ def ensure_packages_installed():
         sys.exit(1) # الخروج إذا فشل الاستيراد الحرج
 
     try:
+        # تم نقل هذا الاستيراد إلى هنا لضمان أن 'telegram' موجود قبل محاولة استيراد مكوناته
+        # هذا يحل مشكلة محتملة إذا كان python-telegram-bot غير مثبت بشكل صحيح
         from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
         from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
         logger.info("✅ استيراد مكونات Python-Telegram-Bot الأساسية بنجاح.")
