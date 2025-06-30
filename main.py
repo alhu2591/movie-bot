@@ -785,7 +785,7 @@ SCRAPERS = [
     {"name": "Aflamco_Movies", "url": "https://aflamco.cloud/%D8%A7%D9%81%D9%84%D8%A7%D9%85/", "parser": parse_aflamco, "category_hint": "فيلم"}, # Updated URL, assuming it's for movies
 
     # Cima4u (new domain and specific categories)
-    {"name": "Cima4u_Movies", "url": "https://cema4u.vip/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a/", "parser": parse_cima4u, "category_hint": "فيلم"},
+    {"name": "Cima4u_Movies", "url": "https://cema4u.vip/category/%d8%a7%d9%81%d9%84%d8%a7%d9%81-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a/", "parser": parse_cima4u, "category_hint": "فيلم"},
     {"name": "Cima4u_Series", "url": "https://cema4u.vip/category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a/", "parser": parse_cima4u, "category_hint": "مسلسل"},
 
     {"name": "Fushaar", "url": "https://www.fushaar.com/?tlvaz", "parser": parse_fushaar, "category_hint": "mixed"}, # Updated URL
