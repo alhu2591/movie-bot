@@ -8,8 +8,8 @@ import schedule
 import time
 import asyncio
 from bs4 import BeautifulSoup
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton # تم إضافة استيراد الأزرار
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters # تم إضافة استيراد المعالجات
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from flask import Flask
 from urllib.parse import urlparse, urlunparse
 from playwright.async_api import async_playwright
@@ -23,20 +23,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Add virtual environment site-packages to sys.path ---
-# This helps ensure all installed packages are discoverable at runtime.
+# --- Add virtual environment site-packages to sys.path explicitly ---
+# This is a more robust way to ensure all installed packages are discoverable at runtime,
+# especially in environments like Render.com where default sys.path might be incomplete.
 try:
-    # Get all site-packages directories using the 'site' module
-    site_packages_dirs = site.getsitepackages()
-    for sp_dir in site_packages_dirs:
-        if sp_dir not in sys.path:
-            sys.path.insert(0, sp_dir)
-            logger.info(f"Added {sp_dir} to sys.path")
+    # sys.prefix points to the root of the virtual environment
+    # Construct the path to site-packages based on common venv structure and Python version
+    python_version_dir = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    site_packages_path = os.path.join(sys.prefix, 'lib', python_version_dir, 'site-packages')
+
+    if os.path.isdir(site_packages_path) and site_packages_path not in sys.path:
+        sys.path.insert(0, site_packages_path)
+        logger.info(f"Added explicit site-packages path to sys.path: {site_packages_path}")
+    else:
+        logger.warning(f"Could not find or add site-packages path: {site_packages_path}")
 except Exception as e:
-    logger.warning(f"Could not automatically add site-packages to sys.path: {e}")
+    logger.critical(f"FATAL ERROR: Failed to configure sys.path for package discovery: {e}")
+    sys.exit(1) # Exit early if we can't ensure packages are found
 
 
-# --- Package Installation and Verification (معدلة) ---
+# --- Package Installation and Verification ---
 def ensure_packages_installed():
     """
     تتحقق من أن المكتبات الأساسية قابلة للاستيراد.
@@ -45,7 +51,7 @@ def ensure_packages_installed():
     logger.info("Verifying critical imports...")
     try:
         # محاولة استيراد المكتبات الأساسية
-        import beautifulsoup4
+        import bs4 # تم تغيير هذا السطر من 'beautifulsoup4' إلى 'bs4'
         import lxml
         import python_telegram_bot
         import aiohttp
@@ -77,6 +83,7 @@ def install_playwright_browsers():
     try:
         logger.info("Attempting to install Playwright browsers...")
         # استخدام --with-deps لضمان تثبيت جميع الاعتمادات الضرورية
+        # استخدام sys.executable لضمان استخدام Python الصحيح في البيئة الافتراضية
         result = subprocess.run([sys.executable, "-m", "playwright", "install", "--with-deps"], capture_output=True, text=True, check=True)
         logger.info("✅ تم تثبيت متصفحات Playwright بنجاح.")
         logger.debug(result.stdout)
@@ -817,26 +824,18 @@ def main():
 
     application = Application.builder().token(TOKEN).build()
     
-    # نقل تعريفات الدالات إلى هنا (قبل إضافتها للمعالجين)
-    # --- أمر بدء البوت ---
-    # لقد قمت بنقل هذه الدالة إلى هنا لضمان تعريفها قبل استخدامها.
     application.add_handler(CommandHandler("start", start))
-
-    # --- أمر فحص حالة البوت ---
-    # لقد قمت بنقل هذه الدالة إلى هنا لضمان تعريفها قبل استخدامها.
     application.add_handler(CommandHandler("alive", alive))
-
-    # --- أمر التحديث اليدوي ---
-    # لقد قمت بنقل هذه الدالة إلى هنا لضمان تعريفها قبل استخدامها.
     application.add_handler(CommandHandler("update", manual_update))
 
     threading.Thread(target=schedule_job, args=(application,), daemon=True).start()
 
     logger.info("✅ البوت يعمل الآن مع 12 موقع سينمائي")
     logger.info("⏱️ تحديث الأفلام كل ساعة تلقائياً")
-    logger.info("🌐 خادم Keep-Alive يعمل على المنفذ 8080")
+    logger.info("� خادم Keep-Alive يعمل على المنفذ 8080")
     logger.info("🔄 استخدم /update لتحديث يدوي")
     application.run_polling()
 
 if __name__ == '__main__':
     main()
+�
