@@ -18,7 +18,7 @@ import logging
 # Import necessary Telegram types for permanent keyboard
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
-
+import telegram # Import telegram to get version
 
 # --- إعداد التسجيل (Logging) ---
 logging.basicConfig(
@@ -77,7 +77,7 @@ ensure_packages_installed()
 
 
 # --- إعدادات البوت ---
-TOKEN = "7576844775:AAHdO2WNOetUhty_RlADiTi4QhyNXZnM2Ds" 
+TOKEN = "7576844775:AAE8pDuHLQOz3HVOUoxIv3a_e685Ic2VZH4" 
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") # متغير بيئة لـ ID المشرف
 
 # --- إعداد خادم keep_alive ---
@@ -1272,6 +1272,9 @@ def main():
     global application
     application = Application.builder().token(TOKEN).build()
     
+    # Log python-telegram-bot version for debugging
+    logger.info(f"python-telegram-bot version: {telegram.__version__}")
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("sitestatus", show_site_status)) # Admin command
     application.add_handler(CallbackQueryHandler(button_callback_handler)) # For inline buttons (settings menu)
