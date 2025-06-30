@@ -22,6 +22,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Add virtual environment site-packages to sys.path ---
+# This helps ensure all installed packages are discoverable at runtime.
+try:
+    # Get the path to the virtual environment's site-packages
+    venv_path = os.path.join(os.path.dirname(sys.executable), '..', 'lib')
+    # Find the pythonX.Y/site-packages directory
+    for item in os.listdir(venv_path):
+        if item.startswith('python') and os.path.isdir(os.path.join(venv_path, item, 'site-packages')):
+            site_packages_path = os.path.join(venv_path, item, 'site-packages')
+            if site_packages_path not in sys.path:
+                sys.path.insert(0, site_packages_path)
+                logger.info(f"Added {site_packages_path} to sys.path")
+            break
+except Exception as e:
+    logger.warning(f"Could not automatically add site-packages to sys.path: {e}")
+
+
 # --- Package Installation and Verification (معدلة) ---
 def ensure_packages_installed():
     """
