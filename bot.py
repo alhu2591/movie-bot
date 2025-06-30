@@ -66,24 +66,8 @@ def ensure_packages_installed():
 # استدعاء الدالة عند بدء تشغيل البوت
 ensure_packages_installed()
 
-# تأكد من تثبيت المتصفحات تلقائياً عند التشغيل
-def install_playwright_browsers():
-    try:
-        logger.info("Attempting to install Playwright browsers...")
-        # استخدام sys.executable -m لضمان استخدام Playwright من البيئة الافتراضية
-        # استخدام --with-deps لضمان تثبيت جميع الاعتمادات الضرورية
-        result = subprocess.run([sys.executable, "-m", "playwright", "install", "--with-deps"], capture_output=True, text=True, check=True)
-        logger.info("✅ تم تثبيت متصفحات Playwright بنجاح.")
-        logger.debug(result.stdout) # استخدام debug لإخراج تفاصيل التثبيت
-    except subprocess.CalledProcessError as e:
-        logger.critical(f"❌ خطأ في تثبيت متصفحات Playwright:\n{e.stderr}")
-        sys.exit(1) # الخروج إذا فشل تثبيت المتصفح
-    except Exception as e:
-        logger.critical(f"❌ حدث خطأ غير متوقع أثناء تثبيت المتصفحات: {e}")
-        sys.exit(1)
-
-# استدعاء الدالة عند بدء تشغيل البوت
-install_playwright_browsers()
+# تم إزالة دالة install_playwright_browsers() واستدعائها
+# سيتم الآن تثبيت المتصفحات في مرحلة البناء (build phase) باستخدام build.sh أو render.yaml
 
 
 # --- إعدادات البوت ---
