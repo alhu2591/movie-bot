@@ -4,3 +4,5 @@ httpx
 schedule
 beautifulsoup4
 requests
+lxml
+
