@@ -1,672 +1,826 @@
+import subprocess
+import sys # تم إضافة هذا الاستيراد لحل مشكلة NameError
 import os
+import re
+import sqlite3
 import threading
-import asyncio
 import schedule
-from datetime import datetime, timedelta
-import html
-import logging
-import time # For time.sleep in schedule_job
-import subprocess # For package installation
-
-# Import modules
-import db_manager
-import scrapers
-import utils # Contains clean_title, deduce_category, validate_url_async
-import config # New: Import configuration settings
-
-# Import necessary Telegram types
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
-import telegram # To get telegram.__version__
+import time
+import asyncio
+from bs4 import BeautifulSoup
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+from flask import Flask
+from urllib.parse import urlparse, urlunparse
+from playwright.async_api import async_playwright
 
 # --- Logging Setup ---
+import logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- Package Installation and Verification (Less Aggressive) ---
+# --- Package Installation and Verification (معدلة) ---
 def ensure_packages_installed():
     """
-    Verifies that critical Python packages are importable.
-    Assumes packages are installed via requirements.txt by the deployment environment.
+    تتحقق من أن المكتبات الأساسية قابلة للاستيراد.
+    تفترض أن المكتبات مثبتة عبر requirements.txt بواسطة بيئة النشر.
     """
     logger.info("Verifying critical imports...")
     try:
-        # Attempt to import core libraries
-        import requests
+        # محاولة استيراد المكتبات الأساسية
+        # تم إزالة 'requests' حيث أنها ليست مستخدمة وتسبب خطأ ModuleNotFoundError
         import beautifulsoup4
         import lxml
         import python_telegram_bot
         import aiohttp
         import schedule
-        logger.info("✅ All core Python packages are importable.")
+        import playwright # تم إضافة playwright للتحقق
+        logger.info("✅ جميع مكتبات Python الأساسية قابلة للاستيراد.")
     except ImportError as e:
-        logger.critical(f"❌ Critical ImportError: {e}")
-        logger.critical("One or more required packages are not installed. Please ensure 'requirements.txt' is correct and dependencies are installed.")
-        sys.exit(1) # Exit if critical imports fail
+        logger.critical(f"❌ خطأ حرج في الاستيراد: {e}")
+        logger.critical("واحد أو أكثر من المكتبات المطلوبة غير مثبت. يرجى التأكد من أن 'requirements.txt' صحيح وأن الاعتمادات مثبتة.")
+        sys.exit(1) # الخروج إذا فشل الاستيراد الحرج
 
     try:
         from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
         from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
-        logger.info("✅ Core Python-Telegram-Bot imports successful.")
+        logger.info("✅ استيراد مكونات Python-Telegram-Bot الأساسية بنجاح.")
     except ImportError as e:
-        logger.critical(f"❌ Critical ImportError for python-telegram-bot components: {e}")
-        logger.critical("This usually means 'python-telegram-bot' is not correctly installed or a conflicting 'telegram' package exists.")
-        logger.critical("Ensure you are using a compatible Python version (e.g., 3.11 or 3.12) and 'python-telegram-bot==20.7' is in requirements.txt.")
+        logger.critical(f"❌ خطأ حرج في الاستيراد لمكونات python-telegram-bot: {e}")
+        logger.critical("هذا يعني عادةً أن 'python-telegram-bot' غير مثبت بشكل صحيح أو أن هناك حزمة 'telegram' متعارضة موجودة.")
+        logger.critical("تأكد من أنك تستخدم إصدار Python متوافق (مثل 3.11 أو 3.12) وأن 'python-telegram-bot==20.7' موجود في requirements.txt.")
         sys.exit(1)
 
-# Call this at the very beginning of the script execution
+# استدعاء الدالة عند بدء تشغيل البوت
 ensure_packages_installed()
 
+# تأكد من تثبيت المتصفحات تلقائياً عند التشغيل
+def install_playwright_browsers():
+    try:
+        logger.info("Attempting to install Playwright browsers...")
+        # استخدام --with-deps لضمان تثبيت جميع الاعتمادات الضرورية
+        result = subprocess.run([sys.executable, "-m", "playwright", "install", "--with-deps"], capture_output=True, text=True, check=True)
+        logger.info("✅ تم تثبيت متصفحات Playwright بنجاح.")
+        logger.debug(result.stdout)
+    except subprocess.CalledProcessError as e:
+        logger.critical(f"❌ خطأ في تثبيت متصفحات Playwright:\n{e.stderr}")
+        sys.exit(1) # الخروج إذا فشل تثبيت المتصفح
+    except Exception as e:
+        logger.critical(f"❌ حدث خطأ غير متوقع أثناء تثبيت المتصفحات: {e}")
+        sys.exit(1)
 
-# Global variable to store the next scheduled update time
-next_update_time = None
+# استدعاء الدالة عند بدء تشغيل البوت
+install_playwright_browsers()
 
-# --- Flask keep_alive server setup ---
+# --- إعدادات البوت ---
+TOKEN = os.getenv("BOT_TOKEN", "7576844775:AAGyos4JkSNiiiwQ5oeCJdAw-2ajMkVdUUA") # تم تحديث هذا الرمز برمز البوت الجديد الخاص بك.
+
+# --- إعداد خادم keep_alive ---
 app = Flask(__name__)
 @app.route('/')
 def home():
-    return "🎬 بوت الأفلام يعمل بنجاح! | 12 موقع سينمائي | تحديث كل 6 ساعات | Keep-Alive مفعل"
-
+    return "🎬 بوت الأفلام يعمل بنجاح! | 12 موقع سينمائي | تحديث كل ساعة"
 def run_flask_app():
     app.run(host='0.0.0.0', port=8080)
-
-# Start Flask in a separate thread
 threading.Thread(target=run_flask_app, daemon=True).start()
 
-# --- Async Functions for Telegram Handlers ---
+# --- تهيئة قاعدة البيانات ---
+def init_db():
+    conn = sqlite3.connect('movies.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS movies
+                (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 title TEXT NOT NULL,
+                 url TEXT NOT NULL UNIQUE,
+                 source TEXT NOT NULL,
+                 image_url TEXT,
+                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    # Add image_url column if it doesn't exist
+    try:
+        c.execute("ALTER TABLE movies ADD COLUMN image_url TEXT")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            logger.error(f"Error altering table: {e}")
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                (user_id INTEGER PRIMARY KEY,
+                 username TEXT,
+                 first_name TEXT,
+                 last_name TEXT,
+                 join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    conn.commit()
+    conn.close()
 
-async def send_new_movies(context: ContextTypes.DEFAULT_TYPE): 
-    """
-    Scrapes for new movies and sends them to users based on their preferences.
-    """
-    logger.info("Starting scheduled movie scraping and sending process.")
-    new_movies_to_send = await scrapers.scrape_movies_and_get_new()
-    if not new_movies_to_send:
-        logger.info("No new movies to send in this round.")
+# --- إضافة مستخدم جديد ---
+def add_user(user_id, username, first_name, last_name):
+    conn = sqlite3.connect('movies.db')
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, last_name) VALUES (?, ?, ?, ?)",
+              (user_id, username, first_name, last_name))
+    conn.commit()
+    conn.close()
+
+# --- تنظيف العناوين ---
+def clean_title(title):
+    # إزالة (سنة) أو [سنة] أو كلمات مثل "مترجم" أو "اون لاين"
+    title = re.sub(r'\s*\(\d{4}\)|\s*\[.*?\]|\s*مترجم|\s*اون لاين|\s*online|\s*HD|\s*WEB-DL|\s*BluRay|\s*نسخة مدبلجة', '', title, flags=re.IGNORECASE)
+    # إزالة أي أحرف غير أبجدية رقمية أو مسافات، باستثناء المسافات
+    title = re.sub(r'[^\w\s\u0600-\u06FF]+', '', title) # يدعم العربية
+    # استبدال مسافات متعددة بمسافة واحدة
+    title = re.sub(r'\s{2,}', ' ', title)
+    return title.strip()
+
+
+# --- دوال تحليل المواقع (تم التحديث) ---
+
+def parse_wecima(soup):
+    movies = []
+    for item in soup.select("div.GridItem"):
+        try:
+            link_tag = item.select_one("a")
+            if not link_tag or not link_tag.get("href"):
+                logger.debug(f"Wecima: Skipping item due to missing link or href: {item.prettify()}")
+                continue
+            link = link_tag["href"]
+            
+            title_tag = item.select_one("strong.hasyear") or item.select_one("img")
+            title = ""
+            if title_tag:
+                if title_tag.name == 'strong':
+                    title = title_tag.get_text(strip=True)
+                else: # It's an img tag
+                    title = title_tag.get("alt", "N/A")
+            if not title or title == "N/A":
+                logger.debug(f"Wecima: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                title = "عنوان غير متوفر" # Provide a default title
+
+            image_url = None
+            bg_style_tag = item.select_one("span.BG--GridItem")
+            if bg_style_tag and 'data-lazy-style' in bg_style_tag.attrs:
+                match = re.search(r'url\((.*?)\)', bg_style_tag['data-lazy-style'])
+                if match:
+                    image_url = match.group(1).strip("'\"")
+            
+            if not image_url:
+                img_tag = item.select_one("img")
+                if img_tag:
+                    image_url = img_tag.get("data-src") or img_tag.get("src")
+            if not image_url:
+                logger.debug(f"Wecima: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image" # Placeholder
+
+            movies.append({"title": title, "url": link, "image_url": image_url, "source": "Wecima"})
+        except Exception as e:
+            logger.error(f"❌ Error parsing Wecima item: {e} - Item HTML causing error: {item.prettify()}")
+            continue
+    return movies
+
+def parse_topcinema(soup):
+    movies = []
+    for item in soup.select("div.col-lg-2.col-md-3.col-sm-4.col-xs-6.col-6.MovieBlock"):
+        try:
+            link_tag = item.select_one("a")
+            if not link_tag or not link_tag.get("href"):
+                logger.debug(f"TopCinema: Skipping item due to missing link or href: {item.prettify()}")
+                continue
+            link = link_tag["href"]
+            
+            title_tag = item.select_one("h2.Title")
+            title = title_tag.get_text(strip=True) if title_tag else "N/A"
+            if not title or title == "N/A":
+                logger.debug(f"TopCinema: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                title = "عنوان غير متوفر"
+            
+            img_tag = item.select_one("img")
+            image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
+            if not image_url:
+                logger.debug(f"TopCinema: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
+            
+            movies.append({"title": title, "url": link, "image_url": image_url, "source": "TopCinema"})
+        except Exception as e:
+            logger.error(f"❌ Error parsing TopCinema item: {e} - Item HTML causing error: {item.prettify()}")
+            continue
+    return movies
+
+def parse_cimaclub(soup):
+    movies = []
+    for item in soup.select("div.Small--Box"):
+        try:
+            link_tag = item.select_one("a.recent--block")
+            if not link_tag or not link_tag.get("href"):
+                logger.debug(f"CimaClub: Skipping item due to missing link or href: {item.prettify()}")
+                continue
+            link = link_tag["href"]
+            
+            title = "عنوان غير متوفر" # Default value
+            
+            # Attempt 1: Get title from h2 within inner--title
+            title_h2_tag = item.select_one(".inner--title h2")
+            if title_h2_tag:
+                extracted_title = title_h2_tag.get_text(strip=True)
+                if extracted_title:
+                    title = extracted_title
+            
+            # Attempt 2: If h2 failed, try img alt attribute
+            if title == "عنوان غير متوفر":
+                img_tag_for_title = item.select_one("div.Poster img")
+                if img_tag_for_title:
+                    extracted_title = img_tag_for_title.get("alt", "")
+                    if extracted_title:
+                        title = extracted_title
+            
+            # Attempt 3: If img alt failed, try link title attribute
+            if title == "عنوان غير متوفر":
+                extracted_title = link_tag.get("title", "")
+                if extracted_title:
+                    title = extracted_title
+
+            if title == "عنوان غير متوفر":
+                logger.debug(f"CimaClub: Could not extract title for link {link} - Item HTML: {item.prettify()}")
+                title = "عنوان غير متوفر" # Ensure default if all attempts fail
+
+            img_tag = item.select_one("div.Poster img")
+            image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
+            if not image_url:
+                logger.debug(f"CimaClub: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image" # Placeholder
+            
+            movies.append({"title": title, "url": link, "image_url": image_url, "source": "CimaClub"})
+        except Exception as e:
+            logger.error(f"❌ Error parsing CimaClub item: {e} - Item HTML causing error: {item.prettify()}")
+            continue
+    return movies
+
+def parse_tuktukcima(soup):
+    movies = []
+    for item in soup.select("div.Blocks ul li.MovieBlock"):
+        try:
+            link_tag = item.select_one("a")
+            if not link_tag or not link_tag.get("href"):
+                logger.debug(f"TukTukCima: Skipping item due to missing link or href: {item.prettify()}")
+                continue
+            link = link_tag["href"]
+            
+            title_tag = item.select_one("h2.Title")
+            title = title_tag.get_text(strip=True) if title_tag else "N/A"
+            if not title or title == "N/A":
+                logger.debug(f"TukTukCima: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                title = "عنوان غير متوفر"
+            
+            img_tag = item.select_one("img")
+            image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
+            if not image_url:
+                logger.debug(f"TukTukCima: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
+            
+            movies.append({"title": title, "url": link, "image_url": image_url, "source": "TukTukCima"})
+        except Exception as e:
+            logger.error(f"❌ Error parsing TukTukCima item: {e} - Item HTML causing error: {item.prettify()}")
+            continue
+    return movies
+
+def parse_egy_onl(soup):
+    movies = []
+    for item in soup.select("div.Blocks ul.MovieList div.movie-box"):
+        try:
+            link_tag = item.select_one("a")
+            if not link_tag or not link_tag.get("href"):
+                logger.debug(f"EgyBest: Skipping item due to missing link or href: {item.prettify()}")
+                continue
+            link = link_tag["href"]
+            
+            # العنوان موجود في alt للصورة
+            title_tag = item.select_one("img")
+            title = title_tag.get("alt", "N/A") if title_tag else "N/A"
+            if not title or title == "N/A":
+                logger.debug(f"EgyBest: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                title = "عنوان غير متوفر"
+            
+            image_url = title_tag.get("data-src") or title_tag.get("src") if title_tag else None
+            if not image_url:
+                logger.debug(f"EgyBest: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
+            
+            movies.append({"title": title, "url": link, "image_url": image_url, "source": "EgyBest"})
+        except Exception as e:
+            logger.error(f"❌ Error parsing EgyBest item: {e} - Item HTML causing error: {item.prettify()}")
+            continue
+    return movies
+
+
+def parse_mycima(soup):
+    movies = []
+    for item in soup.select("div.GridItem"):
+        try:
+            link_tag = item.select_one("a")
+            if not link_tag or not link_tag.get("href"):
+                logger.debug(f"MyCima: Skipping item due to missing link or href: {item.prettify()}")
+                continue
+            link = link_tag["href"]
+            
+            title_tag = item.select_one("strong.hasyear") or item.select_one("img")
+            title = ""
+            if title_tag:
+                if title_tag.name == 'strong':
+                    title = title_tag.get_text(strip=True)
+                else: # It's an img tag
+                    title = title_tag.get("alt", "N/A")
+            if not title or title == "N/A":
+                logger.debug(f"MyCima: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                title = "عنوان غير متوفر"
+
+            image_url = None
+            bg_style_tag = item.select_one("span.BG--GridItem")
+            if bg_style_tag and 'data-lazy-style' in bg_style_tag.attrs:
+                match = re.search(r'url\((.*?)\)', bg_style_tag['data-lazy-style'])
+                if match:
+                    image_url = match.group(1).strip("'\"")
+            
+            if not image_url:
+                img_tag = item.select_one("img")
+                if img_tag:
+                    image_url = img_tag.get("data-src") or img_tag.get("src")
+            if not image_url:
+                logger.debug(f"MyCima: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
+
+            movies.append({"title": title, "url": link, "image_url": image_url, "source": "MyCima"})
+        except Exception as e:
+            logger.error(f"❌ Error parsing MyCima item: {e} - Item HTML causing error: {item.prettify()}")
+            continue
+    return movies
+
+def parse_akoam(soup):
+    movies = []
+    for item in soup.select("div.movie-box"):
+        try:
+            link_tag = item.select_one("a")
+            if not link_tag or not link_tag.get("href"):
+                logger.debug(f"Akoam: Skipping item due to missing link or href: {item.prettify()}")
+                continue
+            link = link_tag["href"]
+            
+            title_tag = item.select_one("h2.Title") or item.select_one("img") # Title can be in h2 or img alt
+            title = ""
+            if title_tag:
+                if title_tag.name == 'h2':
+                    title = title_tag.get_text(strip=True)
+                else: # It's an img tag
+                    title = title_tag.get("alt", "N/A")
+            if not title or title == "N/A":
+                logger.debug(f"Akoam: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                title = "عنوان غير متوفر"
+            
+            img_tag = item.select_one("img")
+            image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
+            if not image_url:
+                logger.debug(f"Akoam: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
+            
+            movies.append({"title": title, "url": link, "image_url": image_url, "source": "Akoam"})
+        except Exception as e:
+            logger.error(f"❌ Error parsing Akoam item: {e} - Item HTML causing error: {item.prettify()}")
+            continue
+    return movies
+
+def parse_shahid4u(soup):
+    movies = []
+    for item in soup.select("div.GridItem"):
+        try:
+            link_tag = item.select_one("a.MovieBlock") # Specific anchor tag
+            if not link_tag or not link_tag.get("href"):
+                logger.debug(f"Shahid4u: Skipping item due to missing link or href: {item.prettify()}")
+                continue
+            link = link_tag["href"]
+            
+            title_tag = item.select_one("h2.MovieTitle")
+            title = title_tag.get_text(strip=True) if title_tag else "N/A"
+            if not title or title == "N/A":
+                logger.debug(f"Shahid4u: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                title = "عنوان غير متوفر"
+            
+            img_tag = item.select_one("img")
+            image_url = img_tag.get("src") if img_tag else None # Shahid4u يستخدم src مباشرة
+            if not image_url:
+                logger.debug(f"Shahid4u: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
+            
+            movies.append({"title": title, "url": link, "image_url": image_url, "source": "Shahid4u"})
+        except Exception as e:
+            logger.error(f"❌ Error parsing Shahid4u item: {e} - Item HTML causing error: {item.prettify()}")
+            continue
+    return movies
+
+def parse_aflamco(soup):
+    movies = []
+    for item in soup.select("div.ModuleItem"):
+        try:
+            link_tag = item.select_one("a")
+            if not link_tag or not link_tag.get("href"):
+                logger.debug(f"Aflamco: Skipping item due to missing link or href: {item.prettify()}")
+                continue
+            link = link_tag["href"]
+            
+            title_tag = item.select_one("h2.ModuleTitle")
+            title = title_tag.get_text(strip=True) if title_tag else "N/A"
+            if not title or title == "N/A":
+                logger.debug(f"Aflamco: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                title = "عنوان غير متوفر"
+            
+            img_tag = item.select_one("img")
+            image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
+            if not image_url:
+                logger.debug(f"Aflamco: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
+            
+            movies.append({"title": title, "url": link, "image_url": image_url, "source": "Aflamco"})
+        except Exception as e:
+            logger.error(f"❌ Error parsing Aflamco item: {e} - Item HTML causing error: {item.prettify()}")
+            continue
+    return movies
+
+def parse_cima4u(soup):
+    movies = []
+    for item in soup.select("div.MovieBlock"):
+        try:
+            link_tag = item.select_one("a")
+            if not link_tag or not link_tag.get("href"):
+                logger.debug(f"Cima4u: Skipping item due to missing link or href: {item.prettify()}")
+                continue
+            link = link_tag["href"]
+            
+            title_tag = item.select_one("h2.Title")
+            title = title_tag.get_text(strip=True) if title_tag else "N/A"
+            if not title or title == "N/A":
+                logger.debug(f"Cima4u: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                title = "عنوان غير متوفر"
+            
+            img_tag = item.select_one("img")
+            image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
+            if not image_url:
+                logger.debug(f"Cima4u: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
+            
+            movies.append({"title": title, "url": link, "image_url": image_url, "source": "Cima4u"})
+        except Exception as e:
+            logger.error(f"❌ Error parsing Cima4u item: {e} - Item HTML causing error: {item.prettify()}")
+            continue
+    return movies
+
+def parse_fushaar(soup):
+    movies = []
+    for item in soup.select("div.Blocks .MovieBlock"):
+        try:
+            link_tag = item.select_one("a")
+            if not link_tag or not link_tag.get("href"):
+                logger.debug(f"Fushaar: Skipping item due to missing link or href: {item.prettify()}")
+                continue
+            link = link_tag["href"]
+            
+            title_tag = item.select_one("h2.Title")
+            title = title_tag.get_text(strip=True) if title_tag else "N/A"
+            if not title or title == "N/A":
+                logger.debug(f"Fushaar: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                title = "عنوان غير متوفر"
+            
+            img_tag = item.select_one("img")
+            image_url = img_tag.get("data-lazy-src") or img_tag.get("src") if img_tag else None
+            if not image_url:
+                logger.debug(f"Fushaar: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
+            
+            movies.append({"title": title, "url": link, "image_url": image_url, "source": "Fushaar"})
+        except Exception as e:
+            logger.error(f"❌ Error parsing Fushaar item: {e} - Item HTML causing error: {item.prettify()}")
+            continue
+    return movies
+
+def parse_aflaam(soup):
+    movies = []
+    for item in soup.select("div.movies-list-grid div.item"):
+        try:
+            link_tag = item.select_one("a.box")
+            if not link_tag or not link_tag.get("href"):
+                logger.debug(f"Aflaam: Skipping item due to missing link or href: {item.prettify()}")
+                continue
+            link = link_tag["href"]
+            
+            title_tag = item.select_one("h3.entry-title")
+            title = title_tag.get_text(strip=True) if title_tag else "N/A"
+            if not title or title == "N/A":
+                logger.debug(f"Aflaam: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                title = "عنوان غير متوفر"
+            
+            img_tag = item.select_one("picture img.lazy") 
+            image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
+            if not image_url:
+                logger.debug(f"Aflaam: Image URL not found for title '{title}' (link: {link}) - Item HTML: {item.prettify()}")
+                image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
+            
+            movies.append({"title": title, "url": link, "image_url": image_url, "source": "Aflaam"})
+        except Exception as e:
+            logger.error(f"❌ Error parsing Aflaam item: {e} - Item HTML causing error: {item.prettify()}")
+            continue
+    return movies
+
+# --- قائمة المواقع (12 موقع) ---
+# Function to get the base URL
+def get_base_url(full_url):
+    parsed_url = urlparse(full_url)
+    return urlunparse((parsed_url.scheme, parsed_url.netloc, '', '', '', '')) + "/"
+
+SCRAPERS = [
+    {"name": "Wecima", "url": get_base_url("https://wecima.video"), "parser": parse_wecima},
+    {"name": "TopCinema", "url": get_base_url("https://web6.topcinema.cam"), "parser": parse_topcinema},
+    {"name": "CimaClub", "url": get_base_url("https://cimaclub.day"), "parser": parse_cimaclub},
+    {"name": "TukTukCima", "url": get_base_url("https://tuktukcima.art"), "parser": parse_tuktukcima},
+    {"name": "EgyBest", "url": get_base_url("https://egy.onl"), "parser": parse_egy_onl}, 
+    {"name": "MyCima", "url": get_base_url("https://mycima.video"), "parser": parse_mycima},
+    {"name": "Akoam", "url": get_base_url("https://akw.onl"), "parser": parse_akoam},
+    {"name": "Shahid4u", "url": get_base_url("https://shahed4uapp.com"), "parser": parse_shahid4u},
+    {"name": "Aflamco", "url": get_base_url("https://aflamco.cloud"), "parser": parse_aflamco},
+    {"name": "Cima4u", "url": get_base_url("https://cima4u.cam"), "parser": parse_cima4u},
+    {"name": "Fushaar", "url": get_base_url("https://www.fushaar.com"), "parser": parse_fushaar},
+    {"name": "Aflaam", "url": get_base_url("https://aflaam.com"), "parser": parse_aflaam}
+]
+
+# --- جلب الأفلام من موقع واحد (المعدلة لاستخدام Playwright) ---
+async def scrape_site_async(scraper, page): # تأخذ page بدلاً من driver
+    try:
+        logger.info(f"جارٍ فحص موقع: {scraper['name']}")
+        # الانتقال إلى الصفحة والانتظار حتى تحميل المحتوى
+        await page.goto(scraper["url"], wait_until="domcontentloaded", timeout=60000) 
+
+        # الحصول على محتوى الصفحة بعد تحميلها بالكامل
+        page_content = await page.content()
+
+        # حفظ نسخة من HTML الصفحة للمعاينة (للتصحيح)
+        with open(f"debug_{scraper['name']}.html", "wb") as f:
+            f.write(page_content.encode('utf-8')) # تأكد من الترميز
+
+        soup = BeautifulSoup(page_content, 'html.parser')
+        movies = scraper["parser"](soup)
+
+        # طباعة عدد الأفلام المستخرجة
+        if movies:
+            logger.info(f"✅ {len(movies)} فيلم تم استخراجه من {scraper['name']}")
+        else:
+            logger.warning(f"⚠️ لم يتم العثور على أفلام في {scraper['name']} باستخدام المحددات الحالية. يرجى التحقق من debug_{scraper['name']}.html")
+
+        return movies
+
+    except Exception as e:
+        logger.error(f"❌ خطأ غير متوقع أثناء تحليل {scraper['name']}: {e}")
+        return []
+
+# --- جلب الأفلام من جميع المواقع (المعدلة لاستخدام Playwright) ---
+async def scrape_movies_async(): # تحويل الدالة لتصبح async
+    new_movies = []
+    total_added_count = 0 
+    browser = None # تهيئة browser خارج try لتأكيد إغلاقه في finally
+    try:
+        # تعيين مسار المتصفحات لـ Playwright
+        # هذا يخبر Playwright بالبحث عن المتصفحات في دليل ذاكرة التخزين المؤقت لـ Replit
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(os.path.expanduser("~"), ".cache", "ms-playwright")
+        
+        async with async_playwright() as p:
+            # تشغيل متصفح Chromium في الوضع المخفي
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]
+            ) 
+
+            conn = sqlite3.connect('movies.db')
+            c = conn.cursor()
+
+            # إنشاء مهام كشط لكل موقع بالتوازي
+            tasks = []
+            for scraper in SCRAPERS:
+                page = await browser.new_page() # إنشاء صفحة جديدة لكل موقع
+                tasks.append(scrape_site_async(scraper, page))
+
+            # تنفيذ جميع مهام الكشط بالتوازي
+            results = await asyncio.gather(*tasks)
+
+            for scraper_idx, movies in enumerate(results):
+                scraper = SCRAPERS[scraper_idx] # الحصول على معلومات السكرابر الأصلية
+                added_count = 0
+                for movie in movies:
+                    try:
+                        # تنظيف العنوان قبل إدخاله في قاعدة البيانات
+                        clean_title_text = clean_title(movie["title"])
+                        # التحقق مما إذا كان الفيلم موجودًا بالفعل باستخدام الرابط النظيف (clean URL)
+                        c.execute("SELECT id FROM movies WHERE url = ?", (movie["url"],))
+                        if c.fetchone() is None:
+                            c.execute("INSERT INTO movies (title, url, source, image_url) VALUES (?, ?, ?, ?)",
+                                      (clean_title_text, movie["url"], scraper["name"], movie.get("image_url")))
+                            new_movies.append({
+                                "title": clean_title_text,
+                                "url": movie["url"],
+                                "source": scraper["name"],
+                                "image_url": movie.get("image_url")
+                            })
+                            added_count += 1
+                    except sqlite3.IntegrityError:
+                        # هذا يحدث إذا كان هناك فيلم بنفس الـ URL موجود بالفعل (UNIQUE constraint)
+                        pass
+                    except Exception as e:
+                        logger.error(f"  ❌ خطأ في إضافة فيلم من {scraper['name']} ({movie.get('title', 'N/A')}): {e}")
+                
+                if added_count > 0:
+                    logger.info(f"  ✅ تمت إضافة {added_count} أفلام جديدة من {scraper['name']}")
+                total_added_count += added_count
+                conn.commit()
+
+            conn.close()
+
+    except Exception as e:
+        logger.critical(f"⚠️ خطأ أثناء جمع الأفلام: {e}") 
+    finally:
+        if browser:
+            await browser.close() # تأكد من إغلاق المتصفح
+            logger.info("متصفح Playwright تم إغلاقه.")
+            
+    logger.info(f"✅ تمت إضافة {total_added_count} فيلم جديد في هذه الجولة.") 
+    return new_movies
+
+# --- إرسال الأفلام الجديدة للمستخدمين ---
+async def send_new_movies(context: ContextTypes.DEFAULT_TYPE):
+    # استدعاء الدالة غير المتزامنة لكشط الأفلام
+    new_movies = await scrape_movies_async() 
+    if not new_movies:
+        logger.info("لا توجد أفلام جديدة للإرسال.")
         return
 
-    users_with_prefs = db_manager.get_all_users_with_preferences()
+    conn = sqlite3.connect('movies.db')
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM users")
+    users = c.fetchall()
+    conn.close()
 
-    for user_id, receive_movies, receive_series, receive_anime in users_with_prefs:
+    # تجميع الأفلام حسب المصدر
+    movies_by_source = {}
+    for movie in new_movies:
+        if movie['source'] not in movies_by_source:
+            movies_by_source[movie['source']] = []
+        movies_by_source[movie['source']].append(movie)
+
+    for user_id, in users:
         try:
-            filtered_movies = []
-            for movie in new_movies_to_send: 
-                if (movie.get('category') == 'فيلم' and receive_movies) or \
-                   (movie.get('category') == 'مسلسل' and receive_series) or \
-                   (movie.get('category') == 'أنمي' and receive_anime):
-                    filtered_movies.append(movie)
+            message_parts = []
+            message_parts.append("🎬 <b>أفلام جديدة متاحة:</b>\n\n")
             
-            if not filtered_movies:
-                continue 
+            for source, movies in movies_by_source.items():
+                message_parts.append(f"<b>{source}:</b>\n")
+                # عرض أول 5 أفلام من كل مصدر
+                for movie in movies[:5]: 
+                    # دمج رابط الصورة كنص بجانب رابط الفيلم
+                    image_link_text = f" (<a href='{movie['image_url']}'>صورة</a>)" if movie.get('image_url') else ""
+                    message_parts.append(f"• <a href='{movie['url']}'>{movie['title']}</a>{image_link_text}\n")
+                message_parts.append("\n")
+            
+            final_message = "".join(message_parts)
 
             await context.bot.send_message(
                 chat_id=user_id,
-                text="🎬 <b>أفلام جديدة متاحة:</b>\n\n",
-                parse_mode='HTML'
+                text=final_message,
+                parse_mode='HTML',
+                disable_web_page_preview=True # Keep this true to prevent large URL previews
             )
-            await asyncio.sleep(0.5) 
-
-            for movie in filtered_movies: 
-                escaped_title = html.escape(movie['title'])
-                
-                photo_caption_text = (
-                    f"🎬 <b>العنوان:</b> {escaped_title}\n"
-                )
-                if movie.get('release_year'):
-                    photo_caption_text += f"📅 <b>سنة الإصدار:</b> {movie['release_year']}\n"
-                if movie.get('genres'):
-                    photo_caption_text += f"🎭 <b>النوع:</b> {movie['genres']}\n" # New: Display genres
-                photo_caption_text += (
-                    f"🎬 <b>المصدر:</b> {movie['source']}\n"
-                    f"🎬 <b>الفئة:</b> {movie['category']}\n"
-                )
-                
-                if movie.get('description'):
-                    description_text = movie['description'].strip()
-                    if description_text:
-                        photo_caption_text += f"\n📝 <b>الوصف:</b> {description_text}\n"
-                
-                # Inline keyboard for Watch, Rate, and Add to Favorites
-                keyboard = [
-                    [InlineKeyboardButton("اضغط هنا للمشاهدة", url=movie["url"])],
-                    [
-                        InlineKeyboardButton("⭐ تقييم الفيلم", callback_data=f'rate_{movie["url"]}'),
-                        InlineKeyboardButton("❤️ إضافة للمفضلة", callback_data=f'add_fav_{movie["url"]}') # New: Add to Favorites button
-                    ]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-
-                image_to_send = movie['image_url'] if movie['image_url'] else "https://placehold.co/600x400/cccccc/333333?text=No+Image+Available"
-
-                try:
-                    await context.bot.send_photo(
-                        chat_id=user_id,
-                        photo=image_to_send,
-                        caption=photo_caption_text, 
-                        parse_mode='HTML',
-                        reply_markup=reply_markup 
-                    )
-                    await asyncio.sleep(0.3) 
-
-                except Exception as photo_e:
-                    logger.error(f"❌ Error sending photo to user {user_id} for movie {movie['title']}: {photo_e}")
-                    # Fallback to text message if photo fails
-                    fallback_text = (
-                        f"🎬 <b>العنوان:</b> {escaped_title}\n"
-                    )
-                    if movie.get('release_year'):
-                        fallback_text += f"📅 <b>سنة الإصدار:</b> {movie['release_year']}\n"
-                    if movie.get('genres'):
-                        fallback_text += f"🎭 <b>النوع:</b> {movie['genres']}\n"
-                    fallback_text += (
-                        f"🎬 <b>المصدر:</b> {movie['source']}\n"
-                        f"🎬 <b>الفئة:</b> {movie['category']}\n"
-                    )
-                    if movie.get('description'):
-                        fallback_text += f"\n📝 <b>الوصف:</b> {movie['description'].strip()}\n"
-                    fallback_text += f'\n🔗 <b>رابط المشاهدة:</b> <a href="{movie["url"]}">اضغط هنا للمشاهدة</a>'
-                    
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=fallback_text,
-                        parse_mode='HTML',
-                        disable_web_page_preview=True
-                    )
-                    await asyncio.sleep(0.3)
-
+            await asyncio.sleep(0.3) # تأخير بسيط لتجنب حدود معدل Telegram API
         except Exception as e:
-            logger.error(f"❌ Error sending movies to user {user_id}: {e}")
+            logger.error(f"❌ خطأ في إرسال الأفلام للمستخدم {user_id}: {e}")
 
-async def self_ping_async():
-    """Pings the local Flask server to keep the service alive."""
-    try:
-        # Use aiohttp for self-ping for consistency with other async operations
-        async with aiohttp.ClientSession() as session:
-            async with session.get("http://localhost:8080", timeout=10) as response:
-                response.raise_for_status()
-                logger.info(f"✅ Self-ping successful! Status: {response.status_code}")
-    except aiohttp.ClientError as e:
-        logger.error(f"❌ Self-ping failed: {e}")
-    except Exception as e:
-        logger.error(f"❌ Unexpected error during self-ping: {e}")
-
-# --- Telegram Bot Handlers ---
-
+# --- أمر بدء البوت ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the /start command."""
     user = update.effective_user
-    db_manager.add_user(user.id, user.username, user.first_name, user.last_name) 
-    await main_menu_internal(user.id, context, user_first_name=user.first_name)
-
-async def main_menu_internal(chat_id: int, context: ContextTypes.DEFAULT_TYPE, user_first_name: str = "عزيزي المستخدم"):
-    """Sends the main menu with persistent ReplyKeyboard buttons."""
-    keyboard = [
-        [KeyboardButton("⚙️ إعدادات التنبيهات")],
-        [KeyboardButton("🔄 تحديث الآن")],
-        [KeyboardButton("🔍 بحث عن فيلم"), KeyboardButton("📊 حالة المواقع")],
-        [KeyboardButton("⏰ التحديث التالي"), KeyboardButton("❤️ مفضلاتي")] # New: Favorites button
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+    add_user(user.id, user.username, user.first_name, user.last_name)
 
     welcome_msg = (
-        f"🎉 مرحباً {user_first_name}!\n"
-        "أنا بوت الأفلام الذكي، سأرسل لك أحدث الأفلام تلقائياً من 12 موقع سينمائي:\n"
-        "- Wecima, TopCinema, CimaClub, TukTukCima, EgyBest, MyCima,\n"
-        "- Akoam, Shahid4u, Aflamco, Cima4u, Fushaar, Aflaam, EgyDead.\n\n"
-        f"⏰ سيصلك تحديث بالأفلام الجديدة كل {config.SCRAPE_INTERVAL_HOURS} ساعات تلقائياً.\n" 
-        "استخدم الأزرار أدناه للتحكم في البوت."
+        f"🎉 مرحباً {user.first_name}!\n"
+        "أنا بوت الأفلام الذكي، سأرسل لك أحدث الأفلام تلقائياً من 12 موقع سينمائي شهير.\n\n"
+        "📺 <b>المواقع المدعومة:</b>\n"
+        "- Wecima, TopCinema, CimaClub\n"
+        "- TukTukCima, EgyBest, MyCima\n"
+        "- Akoam, Shahid4u, Aflamco\n"
+        "- Cima4u, Fushaar, Aflaam\n\n"
+        "⏰ سيصلك تحديث بالأفلام الجديدة كل ساعة تلقائياً\n"
+        "للحصول على تحديث يدوي، استخدم الأمر /update"
     )
-    await context.bot.send_message(chat_id=chat_id, text=welcome_msg, parse_mode='HTML', reply_markup=reply_markup)
-
-async def settings_command_internal(chat_id: int, context: ContextTypes.DEFAULT_TYPE, message_id: int = None, edit_mode: bool = False):
-    """Sends or edits the settings message with inline keyboard for preferences."""
-    user_prefs = db_manager.get_user_preferences(chat_id)
     
-    movies_status = "✅ مفعل" if user_prefs["movies"] else "❌ معطل"
-    series_status = "✅ مفعل" if user_prefs["series"] else "❌ معطل"
-    anime_status = "✅ مفعل" if user_prefs["anime"] else "❌ معطل"
-
-    settings_text = (
-        "⚙️ <b>إعدادات التنبيهات:</b>\n"
-        "اختر أنواع المحتوى التي ترغب في تلقي تنبيهات عنها:\n\n"
-        f"• الأفلام: {movies_status}\n"
-        f"• المسلسلات: {series_status}\n"
-        f"• الأنمي: {anime_status}\n\n"
-        "اضغط على الزر لتغيير الحالة."
+    await update.message.reply_text(
+        welcome_msg,
+        parse_mode='HTML'
     )
 
-    keyboard = [
-        [InlineKeyboardButton(f"الأفلام: {movies_status}", callback_data='toggle_movies')],
-        [InlineKeyboardButton(f"المسلسلات: {series_status}", callback_data='toggle_series')],
-        [InlineKeyboardButton(f"الأنمي: {anime_status}", callback_data='toggle_anime')],
-        [InlineKeyboardButton("⬅️ رجوع", callback_data='back_to_main_menu')] 
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    if edit_mode and message_id:
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=settings_text,
-                parse_mode='HTML',
-                reply_markup=reply_markup
-            )
-        except Exception as e:
-            logger.error(f"Error editing settings message for user {chat_id} (message {message_id}): {e}")
-            await context.bot.send_message(chat_id=chat_id, text=settings_text, parse_mode='HTML', reply_markup=reply_markup)
-    else:
-        await context.bot.send_message(chat_id=chat_id, text=settings_text, parse_mode='HTML', reply_markup=reply_markup)
-
-async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles inline keyboard button callbacks."""
-    query = update.callback_query
-    await query.answer() 
-
-    chat_id = query.message.chat_id 
-
-    if query.data.startswith('toggle_'):
-        pref_type = query.data.replace('toggle_', '')
-        current_prefs = db_manager.get_user_preferences(chat_id)
-        new_value = 0 if current_prefs.get(pref_type) else 1
-        
-        if db_manager.update_user_preference(chat_id, f"receive_{pref_type}", new_value):
-            await settings_command_internal(chat_id, context, query.message.message_id, edit_mode=True)
-        else:
-            await context.bot.send_message(chat_id=chat_id, text="حدث خطأ أثناء تحديث التفضيلات.")
-    elif query.data == 'back_to_main_menu':
-        user = update.effective_user
-        await main_menu_internal(chat_id, context, user_first_name=user.first_name)
-        try:
-            await context.bot.delete_message(chat_id=chat_id, message_id=query.message.message_id)
-        except Exception as e:
-            logger.warning(f"Failed to delete settings message: {e}")
-    elif query.data.startswith('rate_'):
-        movie_url = query.data.replace('rate_', '')
-        movie = db_manager.get_movie_by_url(movie_url)
-        if movie:
-            keyboard = [[InlineKeyboardButton(f"{star}⭐", callback_data=f'submit_rating_{star}_{movie_url}') for star in range(1, 6)]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"يرجى تقييم فيلم <b>{html.escape(movie['title'])}</b> من 1 إلى 5 نجوم:",
-                parse_mode='HTML',
-                reply_markup=reply_markup
-            )
-        else:
-            await context.bot.send_message(chat_id=chat_id, text="عذراً، لم أتمكن من العثور على تفاصيل هذا الفيلم للتقييم.")
-    elif query.data.startswith('submit_rating_'):
-        parts = query.data.split('_')
-        rating = int(parts[2])
-        movie_url = "_".join(parts[3:])
-        
-        if db_manager.add_movie_rating(movie_url, rating):
-            movie = db_manager.get_movie_by_url(movie_url)
-            if movie:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=query.message.message_id,
-                    text=f"شكراً لتقييمك! تم تقييم <b>{html.escape(movie['title'])}</b> بـ {rating} نجوم. المتوسط الحالي: {movie['average_rating']:.1f} ({movie['rating_count']} تقييمات).",
-                    parse_mode='HTML'
-                )
-            else:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=query.message.message_id,
-                    text=f"شكراً لتقييمك! تم تسجيل تقييمك بـ {rating} نجوم.",
-                    parse_mode='HTML'
-                )
-        else:
-            await context.bot.send_message(chat_id=chat_id, text="حدث خطأ أثناء تسجيل تقييمك.")
-    elif query.data.startswith('add_fav_'):
-        movie_url = query.data.replace('add_fav_', '')
-        user_id = query.from_user.id
-        movie = db_manager.get_movie_by_url(movie_url)
-        if movie:
-            if db_manager.add_favorite(user_id, movie_url):
-                await context.bot.send_message(chat_id=chat_id, text=f"✅ تم إضافة <b>{html.escape(movie['title'])}</b> إلى مفضلتك!", parse_mode='HTML')
-            else:
-                await context.bot.send_message(chat_id=chat_id, text=f"⚠️ <b>{html.escape(movie['title'])}</b> موجود بالفعل في مفضلتك.", parse_mode='HTML')
-        else:
-            await context.bot.send_message(chat_id=chat_id, text="عذراً، لم أتمكن من العثور على تفاصيل هذا الفيلم لإضافته إلى المفضلة.")
-    elif query.data.startswith('remove_fav_'):
-        movie_url = query.data.replace('remove_fav_', '')
-        user_id = query.from_user.id
-        movie = db_manager.get_movie_by_url(movie_url)
-        if movie:
-            if db_manager.remove_favorite(user_id, movie_url):
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=query.message.message_id,
-                    text=f"🗑️ تم إزالة <b>{html.escape(movie['title'])}</b> من مفضلتك.",
-                    parse_mode='HTML'
-                )
-                # After removal, potentially refresh the favorites list
-                await show_favorites(update, context)
-            else:
-                await context.bot.send_message(chat_id=chat_id, text="⚠️ الفيلم ليس في مفضلتك أصلاً.")
-        else:
-            await context.bot.send_message(chat_id=chat_id, text="عذراً، لم أتمكن من العثور على تفاصيل هذا الفيلم لإزالته من المفضلة.")
-
-
-async def handle_settings_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handler for the '⚙️ إعدادات التنبيهات' persistent button."""
-    chat_id = update.effective_chat.id
-    await settings_command_internal(chat_id, context)
-
-async def handle_manual_update_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handler for the '🔄 تحديث الآن' persistent button."""
-    chat_id = update.effective_chat.id
-    await update.message.reply_text("بدء تحديث الأفلام يدوياً... قد يستغرق الأمر بضع دقائق.", parse_mode='HTML')
-    try:
-        await send_new_movies(context)
-        await update.message.reply_text("✅ تم الانتهاء من التحديث اليدوي للأفلام.", parse_mode='HTML')
-    except Exception as e:
-        logger.exception("Fatal error during manual movie update.")
-        error_message_for_user = f"❌ حدث خطأ أثناء التحديث اليدوي للأفلام. التفاصيل: <code>{html.escape(str(e))[:150]}...</code>"
-        await update.message.reply_text(error_message_for_user, parse_mode='HTML')
-        if config.ADMIN_CHAT_ID and str(chat_id) != config.ADMIN_CHAT_ID: # Only send to admin if not the admin who triggered it
-            try:
-                await context.bot.send_message(
-                    chat_id=config.ADMIN_CHAT_ID,
-                    text=f"⚠️ خطأ في التحديث اليدوي لبوت الأفلام (تم تشغيله بواسطة {update.effective_user.id}): \n<code>{html.escape(str(e))}</code>",
-                    parse_mode='HTML'
-                )
-            except Exception as admin_e:
-                    logger.error(f"Failed to send error message to admin: {admin_e}")
-
-async def show_site_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handler for the '📊 حالة المواقع' persistent button or /sitestatus command."""
-    statuses = db_manager.get_site_statuses()
-    message = "📊 <b>حالة المواقع:</b>\n\n"
-    if not statuses:
-        message += "لا توجد بيانات حالة للمواقع بعد."
-    else:
-        for site_name, last_scraped, status, last_error in statuses:
-            last_scraped_dt = None
-            if isinstance(last_scraped, str):
-                try:
-                    # Try parsing with microseconds first
-                    last_scraped_dt = datetime.strptime(last_scraped, '%Y-%m-%d %H:%M:%S.%f')
-                except ValueError:
-                    # Fallback to parsing without microseconds
-                    try:
-                        last_scraped_dt = datetime.strptime(last_scraped, '%Y-%m-%d %H:%M:%S')
-                    except ValueError:
-                        pass # Keep as None if parsing fails
-            else: # Assume it's already a datetime object if not string
-                last_scraped_dt = last_scraped
-
-            last_scraped_str = last_scraped_dt.strftime('%Y-%m-%d %H:%M') if last_scraped_dt else "N/A"
-            status_emoji = "✅" if status == 'active' else "❌"
-            error_details = f"\n  (خطأ: <code>{html.escape(last_error[:100])}...</code>)" if last_error else ""
-            message += f"<b>{site_name}</b>: {status_emoji} آخر جلب: {last_scraped_str}, الحالة: {status}{error_details}\n"
+# --- أمر فحص حالة البوت ---
+async def alive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = sqlite3.connect('movies.db')
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM movies")
+    movies_count = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM users")
+    users_count = c.fetchone()[0]
+    conn.close()
     
-    await update.message.reply_text(message, parse_mode='HTML')
-
-async def search_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handler for the '🔍 بحث عن فيلم' persistent button or /search command."""
-    query_text = ""
-    # Check if the message is from the persistent button or a command with arguments
-    if update.message.text and update.message.text.startswith("🔍 بحث عن فيلم"):
-        # If it's the button, prompt for search query
-        await update.message.reply_text("يرجى إدخال كلمة للبحث بعد الأمر. مثال: <code>/search فيلم أكشن</code>", parse_mode='HTML')
-        return
-    elif context.args:
-        query_text = " ".join(context.args).strip()
+    status_msg = (
+        "✅ أنا شغال وقوي!\n\n"
+        f"🎥 عدد الأفلام في قاعدة البيانات: <b>{movies_count}</b>\n"
+        f"👥 عدد المستخدمين: <b>{users_count}</b>\n"
+        "⏱️ آخر تحديث: منذ قليل\n"
+        "🔄 التحديث التالي: خلال ساعة"
+    )
     
-    if not query_text:
-        await update.message.reply_text("يرجى إدخال كلمة للبحث.")
-        return
+    await update.message.reply_text(
+        status_msg,
+        parse_mode='HTML'
+    )
 
-    await update.message.reply_text(f"⏳ جارٍ البحث عن: <b>{html.escape(query_text)}</b>...", parse_mode='HTML')
-
-    results = db_manager.get_movies_for_search(query_text, limit=5)
-
-    if not results:
-        await update.message.reply_text(f"⚠️ لم يتم العثور على أي نتائج لـ: <b>{html.escape(query_text)}</b>", parse_mode='HTML')
-        return
-
-    await update.message.reply_text(f"🔍 <b>نتائج البحث عن '{html.escape(query_text)}':</b>\n\n", parse_mode='HTML')
-
-    for movie_info in results:
-        title, url, source, image_url, category, description, release_year, average_rating = movie_info
-        escaped_title = html.escape(title)
-        
-        photo_caption_text = (
-            f"🎬 <b>العنوان:</b> {escaped_title}\n"
-        )
-        if release_year:
-            photo_caption_text += f"📅 <b>سنة الإصدار:</b> {release_year}\n"
-        # Assuming genres can be inferred from category for now or added to movie_info
-        photo_caption_text += (
-            f"🎬 <b>المصدر:</b> {source}\n"
-            f"🎬 <b>الفئة:</b> {category}\n"
-        )
-        if average_rating and average_rating > 0:
-            photo_caption_text += f"⭐ <b>التقييم:</b> {average_rating:.1f}\n"
-
-        if description:
-            description_text = description.strip()
-            if description_text:
-                photo_caption_text += f"\n📝 <b>الوصف:</b> {description_text}\n"
-        
-        keyboard = [
-            [InlineKeyboardButton("اضغط هنا للمشاهدة", url=url)],
-            [
-                InlineKeyboardButton("⭐ تقييم الفيلم", callback_data=f'rate_{url}'),
-                InlineKeyboardButton("❤️ إضافة للمفضلة", callback_data=f'add_fav_{url}') # Add to Favorites button for search results
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        image_to_send = image_url if image_url else "https://placehold.co/600x400/cccccc/333333?text=No+Image+Available"
-
-        try:
-            await context.bot.send_photo(
-                chat_id=update.effective_chat.id,
-                photo=image_to_send,
-                caption=photo_caption_text, 
-                parse_mode='HTML',
-                reply_markup=reply_markup 
-            )
-            await asyncio.sleep(0.3) 
-        except Exception as photo_e:
-            logger.error(f"❌ Error sending photo to user {update.effective_chat.id} for movie {title} during search: {photo_e}")
-            fallback_text = (
-                f"🎬 <b>العنوان:</b> {escaped_title}\n"
-            )
-            if release_year:
-                fallback_text += f"📅 <b>سنة الإصدار:</b> {release_year}\n"
-            fallback_text += (
-                f"🎬 <b>المصدر:</b> {source}\n"
-                f"🎬 <b>الفئة:</b> {category}\n"
-            )
-            if average_rating and average_rating > 0:
-                fallback_text += f"⭐ <b>التقييم:</b> {average_rating:.1f}\n"
-            if description:
-                fallback_text += f"\n📝 <b>الوصف:</b> {description.strip()}\n"
-            fallback_text += f'\n🔗 <b>رابط المشاهدة:</b> <a href="{url}">اضغط هنا للمشاهدة</a>'
-            
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=fallback_text,
-                parse_mode='HTML',
-                disable_web_page_preview=True
-            )
-            await asyncio.sleep(0.3)
-
-async def next_update_time_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handler for the '⏰ التحديث التالي' persistent button or /nextupdate command."""
-    global next_update_time
-    if next_update_time:
-        time_diff = next_update_time - datetime.now()
-        hours, remainder = divmod(time_diff.total_seconds(), 3600)
-        minutes, seconds = divmod(remainder, 60)
-        
-        message = (
-            f"⏰ التحديث التلقائي التالي سيكون خلال:\n"
-            f"<b>{int(hours)}</b> ساعة و <b>{int(minutes)}</b> دقيقة."
-        )
-    else:
-        message = "⏰ لم يتم تحديد وقت التحديث التالي بعد. قد يكون التحديث الأول قيد التقدم."
+# --- أمر التحديث اليدوي ---
+async def manual_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    await update.message.reply_text("⏳ جارٍ البحث عن أفلام جديدة... قد يستغرق هذا بعض الوقت.")
     
-    await update.message.reply_text(message, parse_mode='HTML')
-
-async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handler for the '❤️ مفضلاتي' persistent button or /favorites command."""
-    user_id = update.effective_user.id
-    favorites = db_manager.get_favorites(user_id)
-
-    if not favorites:
-        await update.message.reply_text("❤️ قائمة مفضلتك فارغة حالياً. يمكنك إضافة أفلام من نتائج البحث أو التحديثات الجديدة.")
+    new_movies = await scrape_movies_async() # تم تعديل الاستدعاء ليكون async
+    if not new_movies:
+        await update.message.reply_text("⚠️ لم يتم العثور على أفلام جديدة في هذه الجولة.")
         return
+    
+    message_parts = []
+    message_parts.append("🎉 <b>تم العثور على أفلام جديدة:</b>\n\n")
 
-    await update.message.reply_text("❤️ <b>أفلامك المفضلة:</b>\n\n", parse_mode='HTML')
+    movies_by_source = {}
+    for movie in new_movies:
+        if movie['source'] not in movies_by_source:
+            movies_by_source[movie['source']] = []
+        movies_by_source[movie['source']].append(movie)
 
-    for movie_info in favorites:
-        title, url, source, image_url, category, description, release_year, average_rating, rating_count, genres = movie_info
-        escaped_title = html.escape(title)
-        
-        photo_caption_text = (
-            f"🎬 <b>العنوان:</b> {escaped_title}\n"
-        )
-        if release_year:
-            photo_caption_text += f"📅 <b>سنة الإصدار:</b> {release_year}\n"
-        if genres:
-            photo_caption_text += f"🎭 <b>النوع:</b> {genres}\n"
-        photo_caption_text += (
-            f"🎬 <b>المصدر:</b> {source}\n"
-            f"🎬 <b>الفئة:</b> {category}\n"
-        )
-        if average_rating and average_rating > 0:
-            photo_caption_text += f"⭐ <b>التقييم:</b> {average_rating:.1f} ({rating_count} تقييمات)\n"
-        
-        if description:
-            description_text = description.strip()
-            if description_text:
-                photo_caption_text += f"\n📝 <b>الوصف:</b> {description_text}\n"
-        
-        # Inline keyboard for each favorite movie
-        keyboard = [
-            [InlineKeyboardButton("اضغط هنا للمشاهدة", url=url)],
-            [InlineKeyboardButton("⭐ تقييم", callback_data=f'rate_{url}'),
-             InlineKeyboardButton("🗑️ إزالة من المفضلة", callback_data=f'remove_fav_{url}')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+    for source, movies in movies_by_source.items():
+        message_parts.append(f"<b>{source}:</b>\n")
+        for movie in movies[:5]: # عرض أول 5 أفلام جديدة من كل مصدر
+            image_link_text = f" (<a href='{movie['image_url']}'>صورة</a>)" if movie.get('image_url') else ""
+            message_parts.append(f"• <a href='{movie['url']}'>{movie['title']}</a>{image_link_text}\n")
+        message_parts.append("\n")
+    
+    final_message = "".join(message_parts)
 
-        try:
-            image_to_send = image_url if image_url else "https://placehold.co/600x400/cccccc/333333?text=No+Image+Available"
-            await context.bot.send_photo(
-                chat_id=user_id,
-                photo=image_to_send,
-                caption=photo_caption_text,
-                parse_mode='HTML',
-                reply_markup=reply_markup
-            )
-            await asyncio.sleep(0.3)
-        except Exception as e:
-            logger.error(f"Error sending favorite movie {title} to user {user_id}: {e}")
-            fallback_text = (
-                f"🎬 <b>العنوان:</b> {escaped_title}\n"
-                f"📅 <b>سنة الإصدار:</b> {release_year if release_year else 'N/A'}\n"
-                f"🎬 <b>المصدر:</b> {source}\n"
-                f"🎬 <b>الفئة:</b> {category}\n"
-                f"⭐ <b>التقييم:</b> {average_rating:.1f} ({rating_count} تقييمات)\n" if average_rating and average_rating > 0 else ""
-                f'\n🔗 <b>رابط المشاهدة:</b> <a href="{url}">اضغط هنا للمشاهدة</a>\n'
-            )
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=fallback_text,
-                parse_mode='HTML',
-                disable_web_page_preview=True
-            )
-            await asyncio.sleep(0.3)
+    await update.message.reply_text(
+        final_message,
+        parse_mode='HTML',
+        disable_web_page_preview=True
+    )
 
-
-# --- Scheduling Job ---
+# --- جدولة المهام ---
 def schedule_job(application):
-    """
-    Runs scheduled tasks in a separate thread.
-    Tasks include: sending new movies, cleaning old movies, and self-ping.
-    """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    async def run_async_task_wrapper_send_new_movies():
-        global next_update_time
+    def run_async_task_wrapper():
         try:
-            await send_new_movies(application) 
+            # تشغيل الدالة غير المتزامنة send_new_movies
+            loop.run_until_complete(send_new_movies(application))
         except Exception as e:
-            logger.error(f"Error in scheduled new movie sending task: {e}")
-        finally:
-            # Update next_update_time after the task completes
-            # This logic assumes 'schedule' library correctly updates its next_run time
-            # after a job execution.
-            next_run_time_obj = schedule.next_run()
-            if next_run_time_obj:
-                next_update_time = next_run_time_obj
-                logger.info(f"Next update time set to: {next_update_time}")
+            logger.error(f"خطأ في المهمة المجدولة: {e}")
 
-
-    async def run_async_task_wrapper_self_ping():
-        try:
-            await self_ping_async()
-        except Exception as e:
-            logger.error(f"Error in scheduled Self-Ping task: {e}")
-
-    # Schedule tasks using config values
-    schedule.every(config.SCRAPE_INTERVAL_HOURS).hours.do(lambda: asyncio.run_coroutine_threadsafe(run_async_task_wrapper_send_new_movies(), loop))
-    schedule.every().day.at(config.DB_CLEANUP_TIME).do(db_manager.cleanup_old_movies) 
-    schedule.every(config.SELF_PING_INTERVAL_MINUTES).minutes.do(lambda: asyncio.run_coroutine_threadsafe(run_async_task_wrapper_self_ping(), loop))
-
-    logger.info("Starting initial movie collection...")
-    # Run initial tasks immediately
-    asyncio.run_coroutine_threadsafe(run_async_task_wrapper_send_new_movies(), loop)
-    asyncio.run_coroutine_threadsafe(run_async_task_wrapper_self_ping(), loop)
+    schedule.every(1).hours.do(run_async_task_wrapper)
+    
+    logger.info("بدء عملية جمع الأفلام الأولية...")
+    run_async_task_wrapper()  
 
     while True:
         schedule.run_pending()
-        time.sleep(30) # Check schedule every 30 seconds
+        time.sleep(30)
 
-# --- Main Bot Execution ---
+# --- تشغيل البوت ---
 def main():
-    """Main function to initialize and run the Telegram bot."""
-    db_manager.init_db() 
-    
-    global application
-    application = Application.builder().token(config.BOT_TOKEN).build()
-    
-    logger.info(f"python-telegram-bot version: {telegram.__version__}")
+    init_db()
+    logger.info("تم تهيئة قاعدة البيانات")
 
-    # Command Handlers
+    application = Application.builder().token(TOKEN).build()
+    
+    # نقل تعريفات الدالات إلى هنا (قبل إضافتها للمعالجين)
+    # --- أمر بدء البوت ---
+    # لقد قمت بنقل هذه الدالة إلى هنا لضمان تعريفها قبل استخدامها.
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("sitestatus", show_site_status))
-    application.add_handler(CommandHandler("search", search_movies))
-    application.add_handler(CommandHandler("nextupdate", next_update_time_command))
-    application.add_handler(CommandHandler("favorites", show_favorites)) # New: /favorites command
-    
-    # Callback Query Handler for Inline Buttons (e.g., settings toggles, rating, add/remove favorite)
-    application.add_handler(CallbackQueryHandler(button_callback_handler))
 
-    # Message Handlers for Persistent Keyboard Buttons (Regex matching text)
-    application.add_handler(MessageHandler(filters.Regex(r"^⚙️ إعدادات التنبيهات$"), handle_settings_button))
-    application.add_handler(MessageHandler(filters.Regex(r"^🔄 تحديث الآن$"), handle_manual_update_button))
-    application.add_handler(MessageHandler(filters.Regex(r"^📊 حالة المواقع$"), show_site_status))
-    application.add_handler(MessageHandler(filters.Regex(r"^🔍 بحث عن فيلم$"), search_movies))
-    application.add_handler(MessageHandler(filters.Regex(r"^⏰ التحديث التالي$"), next_update_time_command))
-    application.add_handler(MessageHandler(filters.Regex(r"^❤️ مفضلاتي$"), show_favorites)) # New: Persistent button for favorites
+    # --- أمر فحص حالة البوت ---
+    # لقد قمت بنقل هذه الدالة إلى هنا لضمان تعريفها قبل استخدامها.
+    application.add_handler(CommandHandler("alive", alive))
 
-    # Start scheduling in a separate thread
+    # --- أمر التحديث اليدوي ---
+    # لقد قمت بنقل هذه الدالة إلى هنا لضمان تعريفها قبل استخدامها.
+    application.add_handler(CommandHandler("update", manual_update))
+
     threading.Thread(target=schedule_job, args=(application,), daemon=True).start()
 
-    logger.info("✅ Movie bot is now running with 12 cinema sites (powered by aiohttp and BeautifulSoup).") 
-    logger.info(f"⏱️ Movies updated automatically every {config.SCRAPE_INTERVAL_HOURS} hours; manual update option available.") 
-    logger.info("🌐 Keep-Alive server running on port 8080.")
-    logger.info("⚙️ Use commands like /start, /settings, /search, /nextupdate, /sitestatus, and /favorites.") 
+    logger.info("✅ البوت يعمل الآن مع 12 موقع سينمائي")
+    logger.info("⏱️ تحديث الأفلام كل ساعة تلقائياً")
+    logger.info("🌐 خادم Keep-Alive يعمل على المنفذ 8080")
+    logger.info("🔄 استخدم /update لتحديث يدوي")
     application.run_polling()
 
 if __name__ == '__main__':
