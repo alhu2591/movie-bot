@@ -3,10 +3,16 @@ import aiohttp
 from bs4 import BeautifulSoup
 import re
 import logging
-from utils import clean_title, deduce_category, validate_url_async, get_base_url
+from utils import clean_title, deduce_category, validate_url_async
 from db_manager import upsert_movie, update_site_status
+import config # New: Import configuration settings
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
+
+# --- In-memory cache for scraped main pages ---
+# Stores {url: {'content': '...', 'timestamp': datetime.now()}}
+_scrape_cache = {}
 
 # --- List of all supported scraping sites ---
 SCRAPERS = [
@@ -57,7 +63,7 @@ async def extract_detailed_movie_info_async(session: aiohttp.ClientSession, movi
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
         }
         async with session.get(movie_url, headers=headers, timeout=30) as response:
-            response.raise_for_status()
+            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
             content = await response.text()
         
         try:
@@ -604,16 +610,25 @@ def parse_egydead(soup):
             continue
     return movies
 
+
 # --- Main scraping logic ---
 async def scrape_single_main_page_and_parse(session: aiohttp.ClientSession, scraper_info: dict):
     """
     Fetches and parses the main page of a single site using aiohttp.
+    Uses in-memory cache to avoid redundant requests within the cache expiry time.
     Returns a list of dictionaries with initial movie data.
     """
     site_name = scraper_info["name"]
     site_url = scraper_info["url"]
     parser_func_name = scraper_info["parser"]
     
+    # Check cache first
+    if site_url in _scrape_cache:
+        cached_data = _scrape_cache[site_url]
+        if datetime.now() - cached_data['timestamp'] < timedelta(seconds=config.CACHE_EXPIRY_SECONDS):
+            logger.info(f"✅ Serving {site_name} main page from cache.")
+            return cached_data['movies']
+
     # Get the parser function by name from the current module
     parser_func = globals().get(parser_func_name)
     if not parser_func:
@@ -641,6 +656,8 @@ async def scrape_single_main_page_and_parse(session: aiohttp.ClientSession, scra
 
         if movies:
             logger.info(f"✅ {len(movies)} initial movies extracted from {site_name}")
+            # Cache the results
+            _scrape_cache[site_url] = {'movies': movies, 'timestamp': datetime.now()}
         else:
             logger.warning(f"⚠️ No movies found on {site_name} (main page) with current selectors.")
             update_site_status(site_name, 'failed', f"No movies found on main page.")
@@ -679,10 +696,8 @@ async def scrape_movies_and_get_new() -> list:
                 for movie in movies_from_site:
                     movie['source_name_for_logging'] = scraper_info['name']
                     movie['category_hint'] = scraper_info.get('category_hint')
-                all_initial_movies_flat.extend(movies_from_site)
-            else:
-                # Site status already updated in scrape_single_main_page_and_parse if failed
-                pass
+                all_initial_movies_flat.extend(movie) # Extend with individual movie dicts
+            # Site status already updated in scrape_single_main_page_and_parse if failed
 
         # Step 2: Process each initial movie, visit its detail page, and add/update in DB
         # This part processes sequentially with a small delay for politeness.
@@ -735,7 +750,7 @@ async def scrape_movies_and_get_new() -> list:
 
             except Exception as e:
                 logger.error(f"  ❌ Error processing movie from {movie_initial_data.get('source_name_for_logging', 'N/A')} ({movie_initial_data.get('title', 'N/A')}): {e}")
-                update_site_status(movie_initial_data["source_name_for_logging'], 'failed', str(e))
+                update_site_status(movie_initial_data["source_name_for_logging"], 'failed', str(e))
 
     logger.info(f"✅ Processed {total_processed_count} movies in this round. {len(newly_added_movies)} are new.")
     return newly_added_movies
