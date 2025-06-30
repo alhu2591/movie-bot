@@ -3,5 +3,5 @@ flask
 httpx
 schedule
 beautifulsoup4
-requests
 lxml
+aiohttp
