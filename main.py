@@ -6,7 +6,8 @@ import sqlite3
 import threading
 import time
 import asyncio
-import requests
+import requests # Keep requests for self-ping, but scraping will use aiohttp
+import aiohttp # New import for asynchronous HTTP requests
 from bs4 import BeautifulSoup
 from flask import Flask
 from urllib.parse import urlparse, urlunparse
@@ -30,12 +31,12 @@ logger = logging.getLogger(__name__)
 # --- Aggressive Package Installation and Verification ---
 def ensure_packages_installed():
     required_pip_packages = [
-        "requests", "beautifulsoup4", "lxml", "python-telegram-bot"
+        "requests", "beautifulsoup4", "lxml", "python-telegram-bot", "aiohttp", "schedule"
     ]
     
     # Aggressive uninstall to clear any conflicting packages
     logger.info("Attempting aggressive uninstallation of potentially conflicting packages...")
-    for pkg in ["telegram", "python-telegram-bot", "requests", "beautifulsoup4", "lxml"]:
+    for pkg in ["telegram", "python-telegram-bot", "requests", "beautifulsoup4", "lxml", "aiohttp", "schedule"]:
         try:
             result = subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", pkg], capture_output=True, text=True)
             if result.returncode == 0:
@@ -77,8 +78,11 @@ ensure_packages_installed()
 
 
 # --- إعدادات البوت ---
-TOKEN = "7576844775:AAE8pDuHLQOz3HVOUoxIv3a_e685Ic2VZH4" 
+TOKEN = "7576844775:AAE8pDuHLQOz3HVOUoxIv3a_e685Ic2VZH4" # Updated token
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") # متغير بيئة لـ ID المشرف
+
+# Global variable to store the next scheduled update time
+next_update_time = None
 
 # --- إعداد خادم keep_alive ---
 app = Flask(__name__)
@@ -156,7 +160,16 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS site_status
                 (site_name TEXT PRIMARY KEY,
                  last_scraped TIMESTAMP,
-                 status TEXT DEFAULT 'unknown')''') # 'active', 'failed', 'unknown'
+                 status TEXT DEFAULT 'unknown',
+                 last_error TEXT)''') # 'active', 'failed', 'unknown'
+    
+    # Add last_error column if it doesn't exist
+    try:
+        c.execute("ALTER TABLE site_status ADD COLUMN last_error TEXT")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            logger.error(f"Error altering site_status table to add last_error column: {e}")
+
 
     conn.commit()
     conn.close()
@@ -223,22 +236,23 @@ def deduce_category(title, url, category_hint=None):
         return "أنمي"
     return "فيلم" # الفئة الافتراضية
 
-# --- دالة مساعدة لاستخراج الوصف المفصل وسنة الإصدار من صفحة الفيلم الفردية باستخدام Requests ---
-def extract_detailed_movie_info_requests(movie_url: str, movie_title_for_ref: str = "") -> (str, int | None):
+# --- دالة مساعدة لاستخراج الوصف المفصل وسنة الإصدار من صفحة الفيلم الفردية باستخدام AIOHTTP ---
+async def extract_detailed_movie_info_async(session: aiohttp.ClientSession, movie_url: str, movie_title_for_ref: str = "") -> (str, int | None):
     description = ""
     release_year = None
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
         }
-        response = requests.get(movie_url, headers=headers, timeout=30)
-        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+        async with session.get(movie_url, headers=headers, timeout=30) as response:
+            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+            content = await response.text()
         
         try:
-            movie_soup = BeautifulSoup(response.content, 'lxml')
+            movie_soup = BeautifulSoup(content, 'lxml')
         except Exception as bs_e:
             logger.warning(f"LXML parser not available for {movie_url}, falling back to html.parser: {bs_e}")
-            movie_soup = BeautifulSoup(response.content, 'html.parser')
+            movie_soup = BeautifulSoup(content, 'html.parser')
 
         # 1. Try to get description from meta tag
         meta_description = movie_soup.find('meta', attrs={'name': 'description'})
@@ -320,8 +334,8 @@ def extract_detailed_movie_info_requests(movie_url: str, movie_title_for_ref: st
                     release_year = None
 
 
-    except requests.exceptions.RequestException as e:
-        logger.warning(f"⚠️ خطأ في جلب تفاصيل الفيلم من {movie_url} باستخدام requests: {e}")
+    except aiohttp.ClientError as e:
+        logger.warning(f"⚠️ خطأ في جلب تفاصيل الفيلم من {movie_url} باستخدام aiohttp: {e}")
     except Exception as e:
         logger.warning(f"⚠️ خطأ غير متوقع في جلب تفاصيل الفيلم من {movie_url}: {e}")
     
@@ -795,12 +809,12 @@ SCRAPERS = [
     {"name": "Aflaam_Series", "url": "https://aflaam.com/series", "parser": parse_aflaam, "category_hint": "مسلسل"},
 
     # New Site: EgyDead
-    {"name": "EgyDead_Movies", "url": "https://egydead.video/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a/", "parser": parse_egydead, "category_hint": "فيلم"},
+    {"name": "EgyDead_Movies", "url": "https://egydead.video/category/%d8%a7%d9%81%d9%84%d8%a7%d9%81-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a/", "parser": parse_egydead, "category_hint": "فيلم"},
     {"name": "EgyDead_Series", "url": "https://egydead.video/series-category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a-1/", "parser": parse_egydead, "category_hint": "مسلسل"},
 ]
 
-# --- جلب وتحليل محتوى الصفحة الرئيسية للموقع باستخدام requests ---
-def scrape_single_main_page_and_parse(scraper: dict):
+# --- جلب وتحليل محتوى الصفحة الرئيسية للموقع باستخدام aiohttp ---
+async def scrape_single_main_page_and_parse(session: aiohttp.ClientSession, scraper: dict):
     site_name = scraper["name"]
     site_url = scraper["url"]
     parser_func = scraper["parser"]
@@ -811,14 +825,15 @@ def scrape_single_main_page_and_parse(scraper: dict):
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
         }
-        response = requests.get(site_url, headers=headers, timeout=60) # Increased timeout
-        response.raise_for_status() # Raise an exception for HTTP errors
+        async with session.get(site_url, headers=headers, timeout=60) as response:
+            response.raise_for_status() # Raise an exception for HTTP errors
+            content = await response.text()
         
         try:
-            soup = BeautifulSoup(response.content, 'lxml') 
+            soup = BeautifulSoup(content, 'lxml') 
         except Exception as bs_e:
             logger.warning(f"LXML parser not available for {site_name}, falling back to html.parser: {bs_e}")
-            soup = BeautifulSoup(response.content, 'html.parser')
+            soup = BeautifulSoup(content, 'html.parser')
         
         movies = parser_func(soup)
 
@@ -827,124 +842,135 @@ def scrape_single_main_page_and_parse(scraper: dict):
         else:
             logger.warning(f"⚠️ لم يتم العثور على أفلام في {site_name} (الصفحة الرئيسية) باستخدام المحددات الحالية.")
         return movies
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ خطأ أثناء جلب/تحليل الصفحة الرئيسية لـ {site_name} ({site_url}) باستخدام requests: {e}")
+    except aiohttp.ClientError as e:
+        logger.error(f"❌ خطأ أثناء جلب/تحليل الصفحة الرئيسية لـ {site_name} ({site_url}) باستخدام aiohttp: {e}")
         return []
     except Exception as e:
-        logger.error(f"❌ خطأ غير متوقع أثناء جلب/تحليل الصفحة الرئيسية لـ {site_name} ({site_url}): {e}")
+        logger.error(f"❌ خطأ غير متوقع أثناء جلب/تحليل الصفحة الرئيسية لـ {site_url}: {e}")
         return []
 
 # --- جمع الأفلام من جميع المواقع وتحديث قاعدة البيانات (UPSERT) ---
-def scrape_movies_and_get_new(): # ليست دالة async بعد الآن
+async def scrape_movies_and_get_new(): 
     newly_added_movies = [] 
     total_processed_count = 0 
     
     conn = sqlite3.connect('movies.db') 
     c = conn.cursor()
 
-    # Step 1: Scrape main pages to get initial movie links and basic info
-    all_initial_movies_flat = []
-    for scraper_info in SCRAPERS:
-        movies_from_site = scrape_single_main_page_and_parse(scraper_info)
-        # Add source and category_hint to each movie for later processing
-        for movie in movies_from_site:
-            movie['source_name_for_logging'] = scraper_info['name'] # Store original scraper name for logging
-            movie['category_hint'] = scraper_info.get('category_hint')
-        all_initial_movies_flat.extend(movies_from_site)
-        time.sleep(1) # Polite delay between sites
+    async with aiohttp.ClientSession() as session:
+        # Step 1: Scrape main pages to get initial movie links and basic info concurrently
+        scrape_tasks = []
+        for scraper_info in SCRAPERS:
+            scrape_tasks.append(scrape_single_main_page_and_parse(session, scraper_info))
+        
+        all_initial_movies_results = await asyncio.gather(*scrape_tasks)
 
-    # Step 2: Process each initial movie, visit its detail page, and add/update in DB
-    for movie_initial_data in all_initial_movies_flat:
-        total_processed_count += 1
-        try:
-            cleaned_title_text = clean_title(movie_initial_data["title"])
-            current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-            # Check if movie exists in DB
-            c.execute("SELECT id, title, image_url, category, description, release_year FROM movies WHERE url = ?", (movie_initial_data["url"],))
-            existing_movie_db = c.fetchone()
-
-            detailed_description = ""
-            accurate_release_year = None
-
-            # Only visit detail page if movie is potentially new or needs updating its description/year
-            # or if the description/release_year from DB is missing
-            if not existing_movie_db or not existing_movie_db[4] or not existing_movie_db[5]: 
-                detailed_description, accurate_release_year = extract_detailed_movie_info_requests(
-                    movie_initial_data["url"], cleaned_title_text
-                )
-                time.sleep(0.5) # Polite delay for detail pages
-
-            # Use extracted data or fallback to initial data/existing DB data
-            movie_description = detailed_description if detailed_description else (existing_movie_db[4] if existing_movie_db else "")
-            movie_release_year = accurate_release_year if accurate_release_year else (existing_movie_db[5] if existing_movie_db else None)
-            # If release_year is still None, try to extract from initial title (fallback)
-            if not movie_release_year:
-                year_match = re.search(r'(\d{4})', movie_initial_data["title"])
-                if year_match:
-                    try:
-                        movie_release_year = int(year_match.group(1))
-                    except ValueError:
-                        movie_release_year = None
-
-            # Use the category hint from the scraper definition
-            category = deduce_category(cleaned_title_text, movie_initial_data["url"], movie_initial_data.get("category_hint"))
-
-            # Update site status for the source of this movie
-            # Call update_site_status function
-            update_site_status(movie_initial_data["source_name_for_logging"], 'active')
-
-            if existing_movie_db:
-                db_id, old_title, old_image_url, old_category, old_description, old_release_year = existing_movie_db
-
-                changed = False
-                if old_title != cleaned_title_text: changed = True
-                if old_image_url != movie_initial_data.get("image_url"): changed = True
-                if old_category != category: changed = True
-                if old_description != movie_description: changed = True
-                if old_release_year != movie_release_year: changed = True
-
-                if changed:
-                    c.execute("""
-                        UPDATE movies 
-                        SET title = ?, image_url = ?, category = ?, description = ?, release_year = ?, last_updated = ?
-                        WHERE url = ?
-                    """, (cleaned_title_text, movie_initial_data.get("image_url"), category,
-                          movie_description, movie_release_year, current_time_str, movie_initial_data["url"]))
-                    logger.info(f"✅ تم تحديث الفيلم: {cleaned_title_text} من {movie_initial_data['source_name_for_logging']}")
+        all_initial_movies_flat = []
+        for scraper_idx, movies_from_site in enumerate(all_initial_movies_results):
+            scraper_info = SCRAPERS[scraper_idx]
+            if movies_from_site:
+                for movie in movies_from_site:
+                    movie['source_name_for_logging'] = scraper_info['name'] # Store original scraper name for logging
+                    movie['category_hint'] = scraper_info.get('category_hint')
+                all_initial_movies_flat.extend(movies_from_site)
             else:
-                # Insert new movie
-                c.execute("INSERT INTO movies (title, url, source, image_url, category, description, release_year, last_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                          (cleaned_title_text, movie_initial_data["url"], movie_initial_data["source_name_for_logging"], movie_initial_data.get("image_url"),
-                           category, movie_description, movie_release_year, current_time_str))
-                newly_added_movies.append({
-                    "title": cleaned_title_text,
-                    "url": movie_initial_data["url"],
-                    "source": movie_initial_data["source_name_for_logging"],
-                    "image_url": movie_initial_data.get("image_url"),
-                    "category": category,
-                    "description": movie_description,
-                    "release_year": movie_release_year
-                })
-                logger.info(f"✨ تم إضافة فيلم جديد: {cleaned_title_text} من {movie_initial_data['source_name_for_logging']}")
+                # Update site status to failed if no movies were found or an error occurred
+                update_site_status(scraper_info['name'], 'failed', f"Failed to scrape main page or no movies found.")
 
-        except Exception as e:
-            logger.error(f"  ❌ خطأ في معالجة فيلم من {movie_initial_data.get('source_name_for_logging', 'N/A')} ({movie_initial_data.get('title', 'N/A')}): {e}")
-        finally:
-            conn.commit() 
-            # No asyncio.sleep here as this is a synchronous function now
+        # Step 2: Process each initial movie, visit its detail page, and add/update in DB
+        # This part could also be parallelized, but for simplicity and to avoid overwhelming sites,
+        # we'll process them sequentially with a small delay for detail pages.
+        for movie_initial_data in all_initial_movies_flat:
+            total_processed_count += 1
+            try:
+                cleaned_title_text = clean_title(movie_initial_data["title"])
+                current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+                # Check if movie exists in DB
+                c.execute("SELECT id, title, image_url, category, description, release_year FROM movies WHERE url = ?", (movie_initial_data["url"],))
+                existing_movie_db = c.fetchone()
+
+                detailed_description = ""
+                accurate_release_year = None
+
+                # Only visit detail page if movie is potentially new or needs updating its description/year
+                # or if the description/release_year from DB is missing
+                if not existing_movie_db or not existing_movie_db[4] or not existing_movie_db[5]: 
+                    detailed_description, accurate_release_year = await extract_detailed_movie_info_async(
+                        session, movie_initial_data["url"], cleaned_title_text
+                    )
+                    await asyncio.sleep(0.5) # Polite delay for detail pages
+
+                # Use extracted data or fallback to initial data/existing DB data
+                movie_description = detailed_description if detailed_description else (existing_movie_db[4] if existing_movie_db else "")
+                movie_release_year = accurate_release_year if accurate_release_year else (existing_movie_db[5] if existing_movie_db else None)
+                # If release_year is still None, try to extract from initial title (fallback)
+                if not movie_release_year:
+                    year_match = re.search(r'(\d{4})', movie_initial_data["title"])
+                    if year_match:
+                        try:
+                            movie_release_year = int(year_match.group(1))
+                        except ValueError:
+                            movie_release_year = None
+
+                # Use the category hint from the scraper definition
+                category = deduce_category(cleaned_title_text, movie_initial_data["url"], movie_initial_data.get("category_hint"))
+
+                # Update site status for the source of this movie
+                update_site_status(movie_initial_data["source_name_for_logging"], 'active', None)
+
+                if existing_movie_db:
+                    db_id, old_title, old_image_url, old_category, old_description, old_release_year = existing_movie_db
+
+                    changed = False
+                    if old_title != cleaned_title_text: changed = True
+                    if old_image_url != movie_initial_data.get("image_url"): changed = True
+                    if old_category != category: changed = True
+                    if old_description != movie_description: changed = True
+                    if old_release_year != movie_release_year: changed = True
+
+                    if changed:
+                        c.execute("""
+                            UPDATE movies 
+                            SET title = ?, image_url = ?, category = ?, description = ?, release_year = ?, last_updated = ?
+                            WHERE url = ?
+                        """, (cleaned_title_text, movie_initial_data.get("image_url"), category,
+                            movie_description, movie_release_year, current_time_str, movie_initial_data["url"]))
+                        logger.info(f"✅ تم تحديث الفيلم: {cleaned_title_text} من {movie_initial_data['source_name_for_logging']}")
+                else:
+                    # Insert new movie
+                    c.execute("INSERT INTO movies (title, url, source, image_url, category, description, release_year, last_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (cleaned_title_text, movie_initial_data["url"], movie_initial_data["source_name_for_logging"], movie_initial_data.get("image_url"),
+                            category, movie_description, movie_release_year, current_time_str))
+                    newly_added_movies.append({
+                        "title": cleaned_title_text,
+                        "url": movie_initial_data["url"],
+                        "source": movie_initial_data["source_name_for_logging"],
+                        "image_url": movie_initial_data.get("image_url"),
+                        "category": category,
+                        "description": movie_description,
+                        "release_year": movie_release_year
+                    })
+                    logger.info(f"✨ تم إضافة فيلم جديد: {cleaned_title_text} من {movie_initial_data['source_name_for_logging']}")
+
+            except Exception as e:
+                logger.error(f"  ❌ خطأ في معالجة فيلم من {movie_initial_data.get('source_name_for_logging', 'N/A')} ({movie_initial_data.get('title', 'N/A')}): {e}")
+                update_site_status(movie_initial_data["source_name_for_logging'], 'failed', str(e))
+            finally:
+                conn.commit() 
+                # No asyncio.sleep here as this is a synchronous function now
 
     conn.close()
     logger.info(f"✅ تم معالجة {total_processed_count} فيلم في هذه الجولة. {len(newly_added_movies)} منها جديدة.")
     return newly_added_movies
 
 # --- دالة مساعدة لتحديث حالة الموقع في قاعدة البيانات ---
-def update_site_status(site_name, status):
+def update_site_status(site_name, status, error_message=None):
     conn = sqlite3.connect('movies.db')
     c = conn.cursor()
     current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-    c.execute("INSERT OR REPLACE INTO site_status (site_name, last_scraped, status) VALUES (?, ?, ?)",
-              (site_name, current_time_str, status))
+    c.execute("INSERT OR REPLACE INTO site_status (site_name, last_scraped, status, last_error) VALUES (?, ?, ?, ?)",
+              (site_name, current_time_str, status, error_message))
     conn.commit()
     conn.close()
 
@@ -952,7 +978,7 @@ def update_site_status(site_name, status):
 def get_site_statuses():
     conn = sqlite3.connect('movies.db')
     c = conn.cursor()
-    c.execute("SELECT site_name, last_scraped, status FROM site_status")
+    c.execute("SELECT site_name, last_scraped, status, last_error FROM site_status")
     statuses = c.fetchall()
     conn.close()
     return statuses
@@ -960,7 +986,7 @@ def get_site_statuses():
 # --- إرسال الأفلام الجديدة للمستخدمين ---
 async def send_new_movies(context: ContextTypes.DEFAULT_TYPE): 
     # استخدام asyncio.to_thread لتشغيل دالة الجلب المتزامنة في مؤشر ترابط منفصل
-    new_movies_to_send = await asyncio.to_thread(scrape_movies_and_get_new)
+    new_movies_to_send = await scrape_movies_and_get_new() # Now directly await the async function
     if not new_movies_to_send:
         logger.info("لا توجد أفلام جديدة للإرسال في هذه الجولة.")
         return
@@ -1063,7 +1089,9 @@ async def self_ping_async():
 async def main_menu_internal(chat_id: int, context: ContextTypes.DEFAULT_TYPE, user_first_name: str = "عزيزي المستخدم"):
     keyboard = [
         [KeyboardButton("⚙️ إعدادات التنبيهات")],
-        [KeyboardButton("🔄 تحديث الآن")]
+        [KeyboardButton("🔄 تحديث الآن")],
+        [KeyboardButton("🔍 بحث عن فيلم"), KeyboardButton("📊 حالة المواقع")],
+        [KeyboardButton("⏰ التحديث التالي")]
     ]
     # استخدام ReplyKeyboardMarkup لجعل الأزرار دائمة
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
@@ -1072,7 +1100,7 @@ async def main_menu_internal(chat_id: int, context: ContextTypes.DEFAULT_TYPE, u
         f"🎉 مرحباً {user_first_name}!\n"
         "أنا بوت الأفلام الذكي، سأرسل لك أحدث الأفلام تلقائياً من 12 موقع سينمائي:\n"
         "- Wecima, TopCinema, CimaClub, TukTukCima, EgyBest, MyCima,\n"
-        "- Akoam, Shahid4u, Aflamco, Cima4u, Fushaar, Aflaam.\n\n"
+        "- Akoam, Shahid4u, Aflamco, Cima4u, Fushaar, Aflaam, EgyDead.\n\n" # Updated site count
         "⏰ سيصلك تحديث بالأفلام الجديدة كل 6 ساعات تلقائياً.\n" 
         "استخدم الأزرار أدناه للتحكم في البوت."
     )
@@ -1184,16 +1212,13 @@ async def handle_manual_update_button(update: Update, context: ContextTypes.DEFA
 
 
 async def show_site_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if str(update.effective_user.id) != ADMIN_CHAT_ID:
-        await update.message.reply_text("ليس لديك الصلاحية لاستخدام هذا الأمر.")
-        return
-
+    # This command is now available to all users via the persistent keyboard
     statuses = get_site_statuses()
     message = "📊 <b>حالة المواقع:</b>\n\n"
     if not statuses:
         message += "لا توجد بيانات حالة للمواقع بعد."
     else:
-        for site_name, last_scraped, status in statuses:
+        for site_name, last_scraped, status, last_error in statuses:
             if isinstance(last_scraped, str):
                 try:
                     last_scraped_dt = datetime.strptime(last_scraped, '%Y-%m-%d %H:%M:%S.%f')
@@ -1203,9 +1228,116 @@ async def show_site_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 last_scraped_dt = last_scraped
 
             last_scraped_str = last_scraped_dt.strftime('%Y-%m-%d %H:%M')
-            message += f"<b>{site_name}</b>: آخر جلب: {last_scraped_str}, الحالة: {status}\n"
+            status_emoji = "✅" if status == 'active' else "❌"
+            error_details = f"\n  (خطأ: {last_error[:100]}...)" if last_error else ""
+            message += f"<b>{site_name}</b>: {status_emoji} آخر جلب: {last_scraped_str}, الحالة: {status}{error_details}\n"
     
     await update.message.reply_text(message, parse_mode='HTML')
+
+async def search_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("يرجى إدخال كلمة للبحث. مثال: <code>/search فيلم أكشن</code>", parse_mode='HTML')
+        return
+
+    query_text = " ".join(context.args).strip()
+    if not query_text:
+        await update.message.reply_text("يرجى إدخال كلمة للبحث.")
+        return
+
+    await update.message.reply_text(f"⏳ جارٍ البحث عن: <b>{html.escape(query_text)}</b>...", parse_mode='HTML')
+
+    conn = sqlite3.connect('movies.db')
+    c = conn.cursor()
+    # Using LIKE for partial, case-insensitive search
+    search_pattern = f"%{query_text}%"
+    c.execute("""
+        SELECT title, url, source, image_url, category, description, release_year
+        FROM movies
+        WHERE title LIKE ? OR description LIKE ?
+        ORDER BY last_updated DESC
+        LIMIT 5
+    """, (search_pattern, search_pattern))
+    results = c.fetchall()
+    conn.close()
+
+    if not results:
+        await update.message.reply_text(f"⚠️ لم يتم العثور على أي نتائج لـ: <b>{html.escape(query_text)}</b>", parse_mode='HTML')
+        return
+
+    await update.message.reply_text(f"🔍 <b>نتائج البحث عن '{html.escape(query_text)}':</b>\n\n", parse_mode='HTML')
+
+    for movie_info in results:
+        title, url, source, image_url, category, description, release_year = movie_info
+        escaped_title = html.escape(title)
+        
+        photo_caption_text = (
+            f"🎬 <b>العنوان:</b> {escaped_title}\n"
+        )
+        if release_year:
+            photo_caption_text += f"📅 <b>سنة الإصدار:</b> {release_year}\n"
+        photo_caption_text += (
+            f"🎬 <b>المصدر:</b> {source}\n"
+            f"🎬 <b>الفئة:</b> {category}\n"
+        )
+        
+        if description:
+            description_text = description.strip()
+            if description_text:
+                photo_caption_text += f"\n📝 <b>الوصف:</b> {description_text}\n"
+        
+        keyboard = [[InlineKeyboardButton("اضغط هنا للمشاهدة", url=url)]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        image_to_send = image_url if image_url else "https://placehold.co/600x400/cccccc/333333?text=No+Image+Available"
+
+        try:
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=image_to_send,
+                caption=photo_caption_text, 
+                parse_mode='HTML',
+                reply_markup=reply_markup 
+            )
+            await asyncio.sleep(0.3) 
+        except Exception as photo_e:
+            logger.error(f"❌ خطأ في إرسال الصورة للمستخدم {update.effective_chat.id} للفيلم {title} أثناء البحث: {photo_e}")
+            fallback_text = (
+                f"🎬 <b>العنوان:</b> {escaped_title}\n"
+            )
+            if release_year:
+                fallback_text += f"📅 <b>سنة الإصدار:</b> {release_year}\n"
+            fallback_text += (
+                f"🎬 <b>المصدر:</b> {source}\n"
+                f"🎬 <b>الفئة:</b> {category}\n"
+            )
+            if description:
+                fallback_text += f"\n📝 <b>الوصف:</b> {description.strip()}\n"
+            fallback_text += f'\n🔗 <b>رابط المشاهدة:</b> <a href="{url}">اضغط هنا للمشاهدة</a>'
+            
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=fallback_text,
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
+            await asyncio.sleep(0.3)
+
+async def next_update_time_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global next_update_time
+    if next_update_time:
+        time_diff = next_update_time - datetime.now()
+        hours, remainder = divmod(time_diff.total_seconds(), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        message = (
+            f"⏰ التحديث التلقائي التالي سيكون خلال:\n"
+            f"<b>{int(hours)}</b> ساعة و <b>{int(minutes)}</b> دقيقة."
+        )
+    else:
+        message = "⏰ لم يتم تحديد وقت التحديث التالي بعد. قد يكون التحديث الأول قيد التقدم."
+    
+    await update.message.reply_text(message, parse_mode='HTML')
+
 
 # --- دالة لتنظيف الأفلام القديمة من قاعدة البيانات ---
 def cleanup_old_movies():
@@ -1235,10 +1367,18 @@ def schedule_job(application):
     asyncio.set_event_loop(loop)
 
     async def run_async_task_wrapper_send_new_movies():
+        global next_update_time
         try:
             await send_new_movies(application) 
         except Exception as e:
             logger.error(f"خطأ في مهمة إرسال الأفلام الجديدة المجدولة: {e}")
+        finally:
+            # Update next_update_time after the task completes
+            next_run = schedule.next_run()
+            if next_run:
+                next_update_time = next_run
+                logger.info(f"تم تحديث وقت التحديث التالي إلى: {next_update_time}")
+
 
     async def run_async_task_wrapper_self_ping():
         try:
@@ -1277,11 +1417,16 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("sitestatus", show_site_status)) # Admin command
+    application.add_handler(CommandHandler("search", search_movies)) # New search command
+    application.add_handler(CommandHandler("nextupdate", next_update_time_command)) # New next update command
     application.add_handler(CallbackQueryHandler(button_callback_handler)) # For inline buttons (settings menu)
 
     # New handlers for permanent keyboard buttons
     application.add_handler(MessageHandler(filters.Regex(r"^⚙️ إعدادات التنبيهات$"), handle_settings_button))
     application.add_handler(MessageHandler(filters.Regex(r"^🔄 تحديث الآن$"), handle_manual_update_button))
+    application.add_handler(MessageHandler(filters.Regex(r"^📊 حالة المواقع$"), show_site_status)) # Handle for persistent button
+    application.add_handler(MessageHandler(filters.Regex(r"^🔍 بحث عن فيلم$"), search_movies)) # Handle for persistent button
+    application.add_handler(MessageHandler(filters.Regex(r"^⏰ التحديث التالي$"), next_update_time_command)) # Handle for persistent button
 
 
     threading.Thread(target=schedule_job, args=(application,), daemon=True).start()
