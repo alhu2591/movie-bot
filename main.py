@@ -27,28 +27,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global variables for telegram imports (now directly imported)
-# Update = None
-# InlineKeyboardButton = None
-# InlineKeyboardMarkup = None
-# Application = None
-# CommandHandler = None
-# ContextTypes = None
-# CallbackQueryHandler = None
-
-
 # --- Aggressive Package Installation and Verification ---
 def ensure_packages_installed():
-    # Global variables are now directly imported, no need for global declaration here
-    # global Update, InlineKeyboardButton, InlineKeyboardMarkup, Application, CommandHandler, ContextTypes, CallbackQueryHandler
-
     required_pip_packages = [
         "requests", "beautifulsoup4", "lxml", "python-telegram-bot"
     ]
     
     # Aggressive uninstall to clear any conflicting packages
     logger.info("Attempting aggressive uninstallation of potentially conflicting packages...")
-    for pkg in ["telegram", "python-telegram-bot", "requests", "beautifulsoup4", "lxml"]: # Removed 'playwright'
+    for pkg in ["telegram", "python-telegram-bot", "requests", "beautifulsoup4", "lxml"]:
         try:
             result = subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", pkg], capture_output=True, text=True)
             if result.returncode == 0:
@@ -76,18 +63,8 @@ def ensure_packages_installed():
     # After mass installation/reinstallation, specifically verify telegram imports
     logger.info("Verifying critical imports...")
     try:
-        # These imports are now at the top of the file
-        # from telegram import Update as _Update, InlineKeyboardButton as _InlineKeyboardButton, InlineKeyboardMarkup as _InlineKeyboardMarkup
-        # from telegram.ext import Application as _Application, CommandHandler as _CommandHandler, ContextTypes as _ContextTypes, CallbackQueryHandler as _CallbackQueryHandler
-        
-        # Update = _Update
-        # InlineKeyboardButton = _InlineKeyboardButton
-        # InlineKeyboardMarkup = _InlineKeyboardMarkup
-        # Application = _Application
-        # CommandHandler = _CommandHandler
-        # ContextTypes = _ContextTypes
-        # CallbackQueryHandler = _CallbackQueryHandler
-
+        from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+        from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
         logger.info("✅ Core Python-Telegram-Bot imports successful.")
     except ImportError as e:
         logger.critical(f"❌ Critical ImportError after package installation: {e}")
@@ -233,11 +210,14 @@ def clean_title(title):
     return title.strip()
 
 # --- دالة مساعدة لتحديد الفئة ---
-def deduce_category(title, url):
+def deduce_category(title, url, category_hint=None):
+    if category_hint and category_hint != "mixed":
+        return category_hint
+
     title_lower = title.lower()
     url_lower = url.lower()
     
-    if "مسلسل" in title_lower or "series" in url_lower or "مسلسلات" in url_lower:
+    if "مسلسل" in title_lower or "series" in url_lower or "مسلسلات" in url_lower or "/series" in url_lower or "/tv" in url_lower or "مسلسلات-اجنبي" in url_lower:
         return "مسلسل"
     if "انمي" in title_lower or "anime" in url_lower or "أنمي" in title_lower:
         return "أنمي"
@@ -741,24 +721,82 @@ def parse_aflaam(soup):
             continue
     return movies
 
+def parse_egydead(soup):
+    movies = []
+    for item in soup.select("div.movie-box, div.GridItem, div.Blocks ul.MovieList div.movie-box"):
+        try:
+            link_tag = item.select_one("a")
+            if not link_tag or not link_tag.get("href"):
+                logger.debug(f"EgyDead: Skipping item due to missing link or href: {item.prettify()}")
+                continue
+            link = link_tag["href"]
+            
+            raw_title = "عنوان غير متوفر"
+            title_tag = item.select_one("h2.Title") or item.select_one("strong.hasyear") or item.select_one("img")
+            if title_tag:
+                if title_tag.name == 'img':
+                    raw_title = title_tag.get("alt", "N/A")
+                else:
+                    raw_title = title_tag.get_text(strip=True)
+            
+            if not raw_title or raw_title == "N/A":
+                logger.debug(f"EgyDead: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
+                raw_title = "عنوان غير متوفر"
+
+            image_url = None
+            img_tag = item.select_one("img")
+            if img_tag:
+                image_url = img_tag.get("data-src") or img_tag.get("src")
+            if not image_url:
+                logger.debug(f"EgyDead: Image URL not found for title '{raw_title}' (link: {link}) - Item HTML: {item.prettify()}")
+                image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
+            
+            movies.append({"title": clean_title(raw_title), "url": link, "image_url": image_url, "source": "EgyDead"})
+        except Exception as e:
+            logger.error(f"❌ خطأ في تحليل عنصر EgyDead: {e} - Item HTML causing error: {item.prettify()}")
+            continue
+    return movies
+
+
 # --- قائمة بجميع المواقع المدعومة (12 موقعًا في هذه النسخة) ---
+# Function to get the base URL (not used for specific URLs now)
 def get_base_url(full_url):
     parsed_url = urlparse(full_url)
     return urlunparse((parsed_url.scheme, parsed_url.netloc, '', '', '', '')) + "/"
 
 SCRAPERS = [
-    {"name": "Wecima", "url": get_base_url("https://wecima.video"), "parser": parse_wecima},
-    {"name": "TopCinema", "url": get_base_url("https://web6.topcinema.cam"), "parser": parse_topcinema},
-    {"name": "CimaClub", "url": get_base_url("https://cimaclub.day"), "parser": parse_cimaclub},
-    {"name": "TukTukCima", "url": get_base_url("https://tuktukcima.art"), "parser": parse_tuktukcima},
-    {"name": "EgyBest", "url": get_base_url("https://egy.onl"), "parser": parse_egy_onl}, 
-    {"name": "MyCima", "url": get_base_url("https://mycima.video"), "parser": parse_mycima},
-    {"name": "Akoam", "url": get_base_url("https://akw.onl"), "parser": parse_akoam},
-    {"name": "Shahid4u", "url": get_base_url("https://shahed4uapp.com"), "parser": parse_shahid4u},
-    {"name": "Aflamco", "url": get_base_url("https://aflamco.cloud"), "parser": parse_aflamco},
-    {"name": "Cima4u", "url": get_base_url("https://cima4u.cam"), "parser": parse_cima4u},
-    {"name": "Fushaar", "url": get_base_url("https://www.fushaar.com"), "parser": parse_fushaar},
-    {"name": "Aflaam", "url": get_base_url("https://aflaam.com"), "parser": parse_aflaam}
+    {"name": "Wecima", "url": "https://wecima.video", "parser": parse_wecima, "category_hint": "mixed"},
+    {"name": "TopCinema", "url": "https://web6.topcinema.cam/recent/", "parser": parse_topcinema, "category_hint": "mixed"},
+    {"name": "CimaClub", "url": "https://cimaclub.day", "parser": parse_cimaclub, "category_hint": "mixed"},
+    {"name": "TukTukCima", "url": "https://tuktukcima.art/recent/", "parser": parse_tuktukcima, "category_hint": "mixed"},
+    {"name": "EgyBest", "url": "https://egy.onl/recent/", "parser": parse_egy_onl, "category_hint": "mixed"}, 
+    {"name": "MyCima", "url": "https://mycima.video", "parser": parse_mycima, "category_hint": "mixed"},
+    
+    # Akoam
+    {"name": "Akoam_Movies", "url": "https://akw.onl/movies/", "parser": parse_akoam, "category_hint": "فيلم"},
+    {"name": "Akoam_Series", "url": "https://akw.onl/series/", "parser": parse_akoam, "category_hint": "مسلسل"},
+    {"name": "Akoam_TV", "url": "https://akw.onl/tv/", "parser": parse_akoam, "category_hint": "مسلسل"}, # Assuming TV is mostly series
+
+    # Shahid4u
+    {"name": "Shahid4u_Movies", "url": "https://shahed4uapp.com/page/movies/", "parser": parse_shahid4u, "category_hint": "فيلم"},
+    {"name": "Shahid4u_Series", "url": "https://shahed4uapp.com/page/series/", "parser": parse_shahid4u, "category_hint": "مسلسل"},
+
+    # Aflamco
+    {"name": "Aflamco_Movies", "url": "https://aflamco.cloud/%D8%A7%D9%81%D9%84%D8%A7%D9%85/", "parser": parse_aflamco, "category_hint": "فيلم"}, # Updated URL, assuming it's for movies
+
+    # Cima4u (new domain and specific categories)
+    {"name": "Cima4u_Movies", "url": "https://cema4u.vip/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a/", "parser": parse_cima4u, "category_hint": "فيلم"},
+    {"name": "Cima4u_Series", "url": "https://cema4u.vip/category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a/", "parser": parse_cima4u, "category_hint": "مسلسل"},
+
+    {"name": "Fushaar", "url": "https://www.fushaar.com/?tlvaz", "parser": parse_fushaar, "category_hint": "mixed"}, # Updated URL
+
+    # Aflaam
+    {"name": "Aflaam_Movies", "url": "https://aflaam.com/movies", "parser": parse_aflaam, "category_hint": "فيلم"},
+    {"name": "Aflaam_Series", "url": "https://aflaam.com/series", "parser": parse_aflaam, "category_hint": "مسلسل"},
+
+    # New Site: EgyDead
+    {"name": "EgyDead_Movies", "url": "https://egydead.video/category/%d8%a7%d9%81%d9%84%d8%a7%d9%85-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a/", "parser": parse_egydead, "category_hint": "فيلم"},
+    {"name": "EgyDead_Series", "url": "https://egydead.video/series-category/%d9%85%d8%b3%d9%84%d8%b3%d9%84%d8%a7%d8%aa-%d8%a7%d8%ac%d9%86%d8%a8%d9%8a-1/", "parser": parse_egydead, "category_hint": "مسلسل"},
 ]
 
 # --- جلب وتحليل محتوى الصفحة الرئيسية للموقع باستخدام requests ---
@@ -808,6 +846,10 @@ def scrape_movies_and_get_new(): # ليست دالة async بعد الآن
     all_initial_movies_flat = []
     for scraper_info in SCRAPERS:
         movies_from_site = scrape_single_main_page_and_parse(scraper_info)
+        # Add source and category_hint to each movie for later processing
+        for movie in movies_from_site:
+            movie['source_name_for_logging'] = scraper_info['name'] # Store original scraper name for logging
+            movie['category_hint'] = scraper_info.get('category_hint')
         all_initial_movies_flat.extend(movies_from_site)
         time.sleep(1) # Polite delay between sites
 
@@ -845,11 +887,12 @@ def scrape_movies_and_get_new(): # ليست دالة async بعد الآن
                     except ValueError:
                         movie_release_year = None
 
-            category = deduce_category(cleaned_title_text, movie_initial_data["url"])
+            # Use the category hint from the scraper definition
+            category = deduce_category(cleaned_title_text, movie_initial_data["url"], movie_initial_data.get("category_hint"))
 
             # Update site status for the source of this movie
             # Call update_site_status function
-            update_site_status(movie_initial_data["source"], 'active')
+            update_site_status(movie_initial_data["source_name_for_logging"], 'active')
 
             if existing_movie_db:
                 db_id, old_title, old_image_url, old_category, old_description, old_release_year = existing_movie_db
@@ -868,25 +911,25 @@ def scrape_movies_and_get_new(): # ليست دالة async بعد الآن
                         WHERE url = ?
                     """, (cleaned_title_text, movie_initial_data.get("image_url"), category,
                           movie_description, movie_release_year, current_time_str, movie_initial_data["url"]))
-                    logger.info(f"✅ تم تحديث الفيلم: {cleaned_title_text} من {movie_initial_data['source']}")
+                    logger.info(f"✅ تم تحديث الفيلم: {cleaned_title_text} من {movie_initial_data['source_name_for_logging']}")
             else:
                 # Insert new movie
                 c.execute("INSERT INTO movies (title, url, source, image_url, category, description, release_year, last_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                          (cleaned_title_text, movie_initial_data["url"], movie_initial_data["source"], movie_initial_data.get("image_url"),
+                          (cleaned_title_text, movie_initial_data["url"], movie_initial_data["source_name_for_logging"], movie_initial_data.get("image_url"),
                            category, movie_description, movie_release_year, current_time_str))
                 newly_added_movies.append({
                     "title": cleaned_title_text,
                     "url": movie_initial_data["url"],
-                    "source": movie_initial_data["source"],
+                    "source": movie_initial_data["source_name_for_logging"],
                     "image_url": movie_initial_data.get("image_url"),
                     "category": category,
                     "description": movie_description,
                     "release_year": movie_release_year
                 })
-                logger.info(f"✨ تم إضافة فيلم جديد: {cleaned_title_text} من {movie_initial_data['source']}")
+                logger.info(f"✨ تم إضافة فيلم جديد: {cleaned_title_text} من {movie_initial_data['source_name_for_logging']}")
 
         except Exception as e:
-            logger.error(f"  ❌ خطأ في معالجة فيلم من {movie_initial_data.get('source', 'N/A')} ({movie_initial_data.get('title', 'N/A')}): {e}")
+            logger.error(f"  ❌ خطأ في معالجة فيلم من {movie_initial_data.get('source_name_for_logging', 'N/A')} ({movie_initial_data.get('title', 'N/A')}): {e}")
         finally:
             conn.commit() 
             # No asyncio.sleep here as this is a synchronous function now
