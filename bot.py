@@ -6,11 +6,13 @@ from datetime import datetime, timedelta
 import html
 import logging
 import time # For time.sleep in schedule_job
+import subprocess # For package installation
 
 # Import modules
 import db_manager
 import scrapers
 import utils # Contains clean_title, deduce_category, validate_url_async
+import config # New: Import configuration settings
 
 # Import necessary Telegram types
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -24,55 +26,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Aggressive Package Installation and Verification ---
+# --- Package Installation and Verification (Less Aggressive) ---
 def ensure_packages_installed():
-    required_pip_packages = [
-        "requests", "beautifulsoup4", "lxml", "python-telegram-bot", "aiohttp", "schedule"
-    ]
-    
-    logger.info("Attempting aggressive uninstallation of potentially conflicting packages...")
-    for pkg in ["telegram", "python-telegram-bot", "requests", "beautifulsoup4", "lxml", "aiohttp", "schedule"]:
-        try:
-            result = subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", pkg], capture_output=True, text=True)
-            if result.returncode == 0:
-                logger.info(f"Uninstalled '{pkg}' (if present).")
-            else:
-                logger.debug(f"Uninstall of '{pkg}' returned non-zero ({result.returncode}), stderr: {result.stderr.strip()}")
-        except Exception as e:
-            logger.warning(f"Error during '{pkg}' uninstallation: {e}")
-
-    try:
-        install_cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall"] + required_pip_packages
-        logger.info(f"Running pip install command: {' '.join(install_cmd)}")
-        result = subprocess.run(install_cmd, capture_output=True, text=True, check=True)
-        logger.info("Required packages installed/reinstalled successfully.")
-        logger.debug(f"pip install stdout: {result.stdout}")
-    except subprocess.CalledProcessError as e:
-        logger.critical(f"❌ Failed to install Python packages. Error: {e.stderr}")
-        logger.critical("Please check your internet connection and environment settings.")
-        sys.exit(1)
-    except Exception as e:
-        logger.critical(f"❌ Unexpected error during Python package installation: {e}")
-        sys.exit(1)
-
+    """
+    Verifies that critical Python packages are importable.
+    Assumes packages are installed via requirements.txt by the deployment environment.
+    """
     logger.info("Verifying critical imports...")
+    try:
+        # Attempt to import core libraries
+        import requests
+        import beautifulsoup4
+        import lxml
+        import python_telegram_bot
+        import aiohttp
+        import schedule
+        logger.info("✅ All core Python packages are importable.")
+    except ImportError as e:
+        logger.critical(f"❌ Critical ImportError: {e}")
+        logger.critical("One or more required packages are not installed. Please ensure 'requirements.txt' is correct and dependencies are installed.")
+        sys.exit(1) # Exit if critical imports fail
+
     try:
         from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
         from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
         logger.info("✅ Core Python-Telegram-Bot imports successful.")
     except ImportError as e:
-        logger.critical(f"❌ Critical ImportError after package installation: {e}")
+        logger.critical(f"❌ Critical ImportError for python-telegram-bot components: {e}")
         logger.critical("This usually means 'python-telegram-bot' is not correctly installed or a conflicting 'telegram' package exists.")
+        logger.critical("Ensure you are using a compatible Python version (e.g., 3.11 or 3.12) and 'python-telegram-bot==20.7' is in requirements.txt.")
         sys.exit(1)
 
 # Call this at the very beginning of the script execution
 ensure_packages_installed()
 
-
-# --- Bot Settings ---
-# It's highly recommended to use environment variables for sensitive data like tokens.
-TOKEN = os.getenv("BOT_TOKEN", "7576844775:AAE8pDuHLQOz3HVOUoxIv3a_e685Ic2VZH4") 
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") # Set this env variable for admin features
 
 # Global variable to store the next scheduled update time
 next_update_time = None
@@ -142,10 +129,13 @@ async def send_new_movies(context: ContextTypes.DEFAULT_TYPE):
                     if description_text:
                         photo_caption_text += f"\n📝 <b>الوصف:</b> {description_text}\n"
                 
-                # Inline keyboard for Watch and Rate
+                # Inline keyboard for Watch, Rate, and Add to Favorites
                 keyboard = [
                     [InlineKeyboardButton("اضغط هنا للمشاهدة", url=movie["url"])],
-                    [InlineKeyboardButton("⭐ تقييم الفيلم", callback_data=f'rate_{movie["url"]}')] # New: Rate button
+                    [
+                        InlineKeyboardButton("⭐ تقييم الفيلم", callback_data=f'rate_{movie["url"]}'),
+                        InlineKeyboardButton("❤️ إضافة للمفضلة", callback_data=f'add_fav_{movie["url"]}') # New: Add to Favorites button
+                    ]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -217,7 +207,7 @@ async def main_menu_internal(chat_id: int, context: ContextTypes.DEFAULT_TYPE, u
         [KeyboardButton("⚙️ إعدادات التنبيهات")],
         [KeyboardButton("🔄 تحديث الآن")],
         [KeyboardButton("🔍 بحث عن فيلم"), KeyboardButton("📊 حالة المواقع")],
-        [KeyboardButton("⏰ التحديث التالي")]
+        [KeyboardButton("⏰ التحديث التالي"), KeyboardButton("❤️ مفضلاتي")] # New: Favorites button
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
@@ -226,7 +216,7 @@ async def main_menu_internal(chat_id: int, context: ContextTypes.DEFAULT_TYPE, u
         "أنا بوت الأفلام الذكي، سأرسل لك أحدث الأفلام تلقائياً من 12 موقع سينمائي:\n"
         "- Wecima, TopCinema, CimaClub, TukTukCima, EgyBest, MyCima,\n"
         "- Akoam, Shahid4u, Aflamco, Cima4u, Fushaar, Aflaam, EgyDead.\n\n"
-        "⏰ سيصلك تحديث بالأفلام الجديدة كل 6 ساعات تلقائياً.\n" 
+        f"⏰ سيصلك تحديث بالأفلام الجديدة كل {config.SCRAPE_INTERVAL_HOURS} ساعات تلقائياً.\n" 
         "استخدم الأزرار أدناه للتحكم في البوت."
     )
     await context.bot.send_message(chat_id=chat_id, text=welcome_msg, parse_mode='HTML', reply_markup=reply_markup)
@@ -331,6 +321,36 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                 )
         else:
             await context.bot.send_message(chat_id=chat_id, text="حدث خطأ أثناء تسجيل تقييمك.")
+    elif query.data.startswith('add_fav_'):
+        movie_url = query.data.replace('add_fav_', '')
+        user_id = query.from_user.id
+        movie = db_manager.get_movie_by_url(movie_url)
+        if movie:
+            if db_manager.add_favorite(user_id, movie_url):
+                await context.bot.send_message(chat_id=chat_id, text=f"✅ تم إضافة <b>{html.escape(movie['title'])}</b> إلى مفضلتك!", parse_mode='HTML')
+            else:
+                await context.bot.send_message(chat_id=chat_id, text=f"⚠️ <b>{html.escape(movie['title'])}</b> موجود بالفعل في مفضلتك.", parse_mode='HTML')
+        else:
+            await context.bot.send_message(chat_id=chat_id, text="عذراً، لم أتمكن من العثور على تفاصيل هذا الفيلم لإضافته إلى المفضلة.")
+    elif query.data.startswith('remove_fav_'):
+        movie_url = query.data.replace('remove_fav_', '')
+        user_id = query.from_user.id
+        movie = db_manager.get_movie_by_url(movie_url)
+        if movie:
+            if db_manager.remove_favorite(user_id, movie_url):
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=query.message.message_id,
+                    text=f"🗑️ تم إزالة <b>{html.escape(movie['title'])}</b> من مفضلتك.",
+                    parse_mode='HTML'
+                )
+                # After removal, potentially refresh the favorites list
+                await show_favorites(update, context)
+            else:
+                await context.bot.send_message(chat_id=chat_id, text="⚠️ الفيلم ليس في مفضلتك أصلاً.")
+        else:
+            await context.bot.send_message(chat_id=chat_id, text="عذراً، لم أتمكن من العثور على تفاصيل هذا الفيلم لإزالته من المفضلة.")
+
 
 async def handle_settings_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handler for the '⚙️ إعدادات التنبيهات' persistent button."""
@@ -348,10 +368,10 @@ async def handle_manual_update_button(update: Update, context: ContextTypes.DEFA
         logger.exception("Fatal error during manual movie update.")
         error_message_for_user = f"❌ حدث خطأ أثناء التحديث اليدوي للأفلام. التفاصيل: <code>{html.escape(str(e))[:150]}...</code>"
         await update.message.reply_text(error_message_for_user, parse_mode='HTML')
-        if ADMIN_CHAT_ID and str(chat_id) != ADMIN_CHAT_ID: # Only send to admin if not the admin who triggered it
+        if config.ADMIN_CHAT_ID and str(chat_id) != config.ADMIN_CHAT_ID: # Only send to admin if not the admin who triggered it
             try:
                 await context.bot.send_message(
-                    chat_id=ADMIN_CHAT_ID,
+                    chat_id=config.ADMIN_CHAT_ID,
                     text=f"⚠️ خطأ في التحديث اليدوي لبوت الأفلام (تم تشغيله بواسطة {update.effective_user.id}): \n<code>{html.escape(str(e))}</code>",
                     parse_mode='HTML'
                 )
@@ -390,7 +410,9 @@ async def show_site_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def search_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handler for the '🔍 بحث عن فيلم' persistent button or /search command."""
     query_text = ""
-    if update.message.text.startswith("🔍 بحث عن فيلم"):
+    # Check if the message is from the persistent button or a command with arguments
+    if update.message.text and update.message.text.startswith("🔍 بحث عن فيلم"):
+        # If it's the button, prompt for search query
         await update.message.reply_text("يرجى إدخال كلمة للبحث بعد الأمر. مثال: <code>/search فيلم أكشن</code>", parse_mode='HTML')
         return
     elif context.args:
@@ -434,7 +456,10 @@ async def search_movies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
         keyboard = [
             [InlineKeyboardButton("اضغط هنا للمشاهدة", url=url)],
-            [InlineKeyboardButton("⭐ تقييم الفيلم", callback_data=f'rate_{url}')] # Rate button for search results
+            [
+                InlineKeyboardButton("⭐ تقييم الفيلم", callback_data=f'rate_{url}'),
+                InlineKeyboardButton("❤️ إضافة للمفضلة", callback_data=f'add_fav_{url}') # Add to Favorites button for search results
+            ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -491,6 +516,77 @@ async def next_update_time_command(update: Update, context: ContextTypes.DEFAULT
     
     await update.message.reply_text(message, parse_mode='HTML')
 
+async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler for the '❤️ مفضلاتي' persistent button or /favorites command."""
+    user_id = update.effective_user.id
+    favorites = db_manager.get_favorites(user_id)
+
+    if not favorites:
+        await update.message.reply_text("❤️ قائمة مفضلتك فارغة حالياً. يمكنك إضافة أفلام من نتائج البحث أو التحديثات الجديدة.")
+        return
+
+    await update.message.reply_text("❤️ <b>أفلامك المفضلة:</b>\n\n", parse_mode='HTML')
+
+    for movie_info in favorites:
+        title, url, source, image_url, category, description, release_year, average_rating, rating_count, genres = movie_info
+        escaped_title = html.escape(title)
+        
+        photo_caption_text = (
+            f"🎬 <b>العنوان:</b> {escaped_title}\n"
+        )
+        if release_year:
+            photo_caption_text += f"📅 <b>سنة الإصدار:</b> {release_year}\n"
+        if genres:
+            photo_caption_text += f"🎭 <b>النوع:</b> {genres}\n"
+        photo_caption_text += (
+            f"🎬 <b>المصدر:</b> {source}\n"
+            f"🎬 <b>الفئة:</b> {category}\n"
+        )
+        if average_rating and average_rating > 0:
+            photo_caption_text += f"⭐ <b>التقييم:</b> {average_rating:.1f} ({rating_count} تقييمات)\n"
+        
+        if description:
+            description_text = description.strip()
+            if description_text:
+                photo_caption_text += f"\n📝 <b>الوصف:</b> {description_text}\n"
+        
+        # Inline keyboard for each favorite movie
+        keyboard = [
+            [InlineKeyboardButton("اضغط هنا للمشاهدة", url=url)],
+            [InlineKeyboardButton("⭐ تقييم", callback_data=f'rate_{url}'),
+             InlineKeyboardButton("🗑️ إزالة من المفضلة", callback_data=f'remove_fav_{url}')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        try:
+            image_to_send = image_url if image_url else "https://placehold.co/600x400/cccccc/333333?text=No+Image+Available"
+            await context.bot.send_photo(
+                chat_id=user_id,
+                photo=image_to_send,
+                caption=photo_caption_text,
+                parse_mode='HTML',
+                reply_markup=reply_markup
+            )
+            await asyncio.sleep(0.3)
+        except Exception as e:
+            logger.error(f"Error sending favorite movie {title} to user {user_id}: {e}")
+            fallback_text = (
+                f"🎬 <b>العنوان:</b> {escaped_title}\n"
+                f"📅 <b>سنة الإصدار:</b> {release_year if release_year else 'N/A'}\n"
+                f"🎬 <b>المصدر:</b> {source}\n"
+                f"🎬 <b>الفئة:</b> {category}\n"
+                f"⭐ <b>التقييم:</b> {average_rating:.1f} ({rating_count} تقييمات)\n" if average_rating and average_rating > 0 else ""
+                f'\n🔗 <b>رابط المشاهدة:</b> <a href="{url}">اضغط هنا للمشاهدة</a>\n'
+            )
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=fallback_text,
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
+            await asyncio.sleep(0.3)
+
+
 # --- Scheduling Job ---
 def schedule_job(application):
     """
@@ -522,10 +618,10 @@ def schedule_job(application):
         except Exception as e:
             logger.error(f"Error in scheduled Self-Ping task: {e}")
 
-    # Schedule tasks
-    schedule.every(6).hours.do(lambda: asyncio.run_coroutine_threadsafe(run_async_task_wrapper_send_new_movies(), loop))
-    schedule.every().day.at("03:00").do(db_manager.cleanup_old_movies) 
-    schedule.every(5).minutes.do(lambda: asyncio.run_coroutine_threadsafe(run_async_task_wrapper_self_ping(), loop))
+    # Schedule tasks using config values
+    schedule.every(config.SCRAPE_INTERVAL_HOURS).hours.do(lambda: asyncio.run_coroutine_threadsafe(run_async_task_wrapper_send_new_movies(), loop))
+    schedule.every().day.at(config.DB_CLEANUP_TIME).do(db_manager.cleanup_old_movies) 
+    schedule.every(config.SELF_PING_INTERVAL_MINUTES).minutes.do(lambda: asyncio.run_coroutine_threadsafe(run_async_task_wrapper_self_ping(), loop))
 
     logger.info("Starting initial movie collection...")
     # Run initial tasks immediately
@@ -542,7 +638,7 @@ def main():
     db_manager.init_db() 
     
     global application
-    application = Application.builder().token(TOKEN).build()
+    application = Application.builder().token(config.BOT_TOKEN).build()
     
     logger.info(f"python-telegram-bot version: {telegram.__version__}")
 
@@ -551,8 +647,9 @@ def main():
     application.add_handler(CommandHandler("sitestatus", show_site_status))
     application.add_handler(CommandHandler("search", search_movies))
     application.add_handler(CommandHandler("nextupdate", next_update_time_command))
+    application.add_handler(CommandHandler("favorites", show_favorites)) # New: /favorites command
     
-    # Callback Query Handler for Inline Buttons (e.g., settings toggles, rating)
+    # Callback Query Handler for Inline Buttons (e.g., settings toggles, rating, add/remove favorite)
     application.add_handler(CallbackQueryHandler(button_callback_handler))
 
     # Message Handlers for Persistent Keyboard Buttons (Regex matching text)
@@ -561,14 +658,15 @@ def main():
     application.add_handler(MessageHandler(filters.Regex(r"^📊 حالة المواقع$"), show_site_status))
     application.add_handler(MessageHandler(filters.Regex(r"^🔍 بحث عن فيلم$"), search_movies))
     application.add_handler(MessageHandler(filters.Regex(r"^⏰ التحديث التالي$"), next_update_time_command))
+    application.add_handler(MessageHandler(filters.Regex(r"^❤️ مفضلاتي$"), show_favorites)) # New: Persistent button for favorites
 
     # Start scheduling in a separate thread
     threading.Thread(target=schedule_job, args=(application,), daemon=True).start()
 
     logger.info("✅ Movie bot is now running with 12 cinema sites (powered by aiohttp and BeautifulSoup).") 
-    logger.info("⏱️ Movies updated automatically every 6 hours; manual update option available.") 
+    logger.info(f"⏱️ Movies updated automatically every {config.SCRAPE_INTERVAL_HOURS} hours; manual update option available.") 
     logger.info("🌐 Keep-Alive server running on port 8080.")
-    logger.info("⚙️ Use commands like /start, /settings, /search, /nextupdate, and /sitestatus.") 
+    logger.info("⚙️ Use commands like /start, /settings, /search, /nextupdate, /sitestatus, and /favorites.") 
     application.run_polling()
 
 if __name__ == '__main__':
