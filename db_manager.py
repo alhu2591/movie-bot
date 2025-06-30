@@ -1,13 +1,14 @@
 import sqlite3
 from datetime import datetime, timedelta
 import logging
+import config # New: Import configuration settings
 
 logger = logging.getLogger(__name__)
 
 def init_db():
     """
     Initializes the SQLite database, creating tables and adding indexes if they don't exist.
-    Tables: movies, users, site_status.
+    Tables: movies, users, site_status, favorites.
     """
     conn = sqlite3.connect('movies.db')
     c = conn.cursor()
@@ -22,8 +23,9 @@ def init_db():
                  category TEXT,
                  description TEXT,
                  release_year INTEGER,
-                 average_rating REAL DEFAULT 0.0, -- New: Average rating
-                 rating_count INTEGER DEFAULT 0,    -- New: Number of ratings
+                 average_rating REAL DEFAULT 0.0,
+                 rating_count INTEGER DEFAULT 0,
+                 genres TEXT, -- New: to store comma-separated genres
                  last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
     # Add new columns if they don't exist (for schema evolution)
@@ -62,6 +64,12 @@ def init_db():
     except sqlite3.OperationalError as e:
         if "duplicate column name" not in str(e):
             logger.error(f"Error altering movies table to add rating_count column: {e}")
+    
+    try:
+        c.execute("ALTER TABLE movies ADD COLUMN genres TEXT") # New: genres column
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            logger.error(f"Error altering movies table to add genres column: {e}")
 
     # Create indexes for faster lookups on common query columns
     c.execute("CREATE INDEX IF NOT EXISTS idx_movies_url ON movies (url)")
@@ -76,7 +84,7 @@ def init_db():
                  first_name TEXT,
                  last_name TEXT,
                  join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                 receive_movies INTEGER DEFAULT 1,    -- 1 for true, 0 for false
+                 receive_movies INTEGER DEFAULT 1,
                  receive_series INTEGER DEFAULT 1,
                  receive_anime INTEGER DEFAULT 1)''')
     
@@ -92,8 +100,8 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS site_status
                 (site_name TEXT PRIMARY KEY,
                  last_scraped TIMESTAMP,
-                 status TEXT DEFAULT 'unknown', -- 'active', 'failed', 'unknown'
-                 last_error TEXT)''') # New: Stores last error message
+                 status TEXT DEFAULT 'unknown',
+                 last_error TEXT)''')
     
     # Add last_error column if it doesn't exist
     try:
@@ -101,6 +109,19 @@ def init_db():
     except sqlite3.OperationalError as e:
         if "duplicate column name" not in str(e):
             logger.error(f"Error altering site_status table to add last_error column: {e}")
+
+    # --- Favorites Table (New) ---
+    c.execute('''CREATE TABLE IF NOT EXISTS favorites
+                (user_id INTEGER NOT NULL,
+                 movie_url TEXT NOT NULL,
+                 added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                 PRIMARY KEY (user_id, movie_url),
+                 FOREIGN KEY (user_id) REFERENCES users(user_id),
+                 FOREIGN KEY (movie_url) REFERENCES movies(url))''')
+    
+    # Create index for faster lookup of favorites by user
+    c.execute("CREATE INDEX IF NOT EXISTS idx_favorites_user_id ON favorites (user_id)")
+
 
     conn.commit()
     conn.close()
@@ -162,12 +183,12 @@ def get_site_statuses() -> list:
     return statuses
 
 def cleanup_old_movies():
-    """Deletes movies older than 90 days from the database and vacuums."""
+    """Deletes movies older than MOVIE_RETENTION_DAYS from the database and vacuums."""
     conn = sqlite3.connect('movies.db')
     c = conn.cursor()
     
-    ninety_days_ago = datetime.now() - timedelta(days=90)
-    c.execute("DELETE FROM movies WHERE last_updated < ?", (ninety_days_ago,))
+    retention_date = datetime.now() - timedelta(days=config.MOVIE_RETENTION_DAYS)
+    c.execute("DELETE FROM movies WHERE last_updated < ?", (retention_date,))
     deleted_count = c.rowcount
     
     try:
@@ -188,10 +209,10 @@ def get_movies_for_search(query_text: str, limit: int = 5) -> list:
     c.execute("""
         SELECT title, url, source, image_url, category, description, release_year, average_rating
         FROM movies
-        WHERE title LIKE ? OR description LIKE ?
+        WHERE title LIKE ? OR description LIKE ? OR genres LIKE ?
         ORDER BY last_updated DESC
         LIMIT ?
-    """, (search_pattern, search_pattern, limit))
+    """, (search_pattern, search_pattern, search_pattern, limit)) # Added genres to search
     results = c.fetchall()
     conn.close()
     return results
@@ -206,16 +227,16 @@ def get_all_users_with_preferences() -> list:
     return users_with_prefs
 
 def upsert_movie(movie_data: dict) -> bool:
-    """Inserts or updates a movie record in the database."""
+    """Inserts or updates a movie record in the database. Returns True if newly added, False if updated/exists."""
     conn = sqlite3.connect('movies.db')
     c = conn.cursor()
     current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    c.execute("SELECT id, title, image_url, category, description, release_year FROM movies WHERE url = ?", (movie_data["url"],))
+    c.execute("SELECT id, title, image_url, category, description, release_year, genres FROM movies WHERE url = ?", (movie_data["url"],))
     existing_movie_db = c.fetchone()
 
     if existing_movie_db:
-        db_id, old_title, old_image_url, old_category, old_description, old_release_year = existing_movie_db
+        db_id, old_title, old_image_url, old_category, old_description, old_release_year, old_genres = existing_movie_db
 
         changed = False
         if old_title != movie_data["title"]: changed = True
@@ -223,21 +244,22 @@ def upsert_movie(movie_data: dict) -> bool:
         if old_category != movie_data.get("category"): changed = True
         if old_description != movie_data.get("description"): changed = True
         if old_release_year != movie_data.get("release_year"): changed = True
+        if old_genres != movie_data.get("genres"): changed = True # New: check genres
 
         if changed:
             c.execute("""
                 UPDATE movies 
-                SET title = ?, image_url = ?, category = ?, description = ?, release_year = ?, last_updated = ?
+                SET title = ?, image_url = ?, category = ?, description = ?, release_year = ?, genres = ?, last_updated = ?
                 WHERE url = ?
             """, (movie_data["title"], movie_data.get("image_url"), movie_data.get("category"),
-                  movie_data.get("description"), movie_data.get("release_year"), current_time_str, movie_data["url"]))
+                  movie_data.get("description"), movie_data.get("release_year"), movie_data.get("genres"), current_time_str, movie_data["url"]))
             conn.commit()
             logger.info(f"Updated movie: {movie_data['title']} from {movie_data['source']}")
             return False # Not newly added
     else:
-        c.execute("INSERT INTO movies (title, url, source, image_url, category, description, release_year, last_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        c.execute("INSERT INTO movies (title, url, source, image_url, category, description, release_year, genres, last_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                   (movie_data["title"], movie_data["url"], movie_data["source"], movie_data.get("image_url"),
-                   movie_data.get("category"), movie_data.get("description"), movie_data.get("release_year"), current_time_str))
+                   movie_data.get("category"), movie_data.get("description"), movie_data.get("release_year"), movie_data.get("genres"), current_time_str))
         conn.commit()
         logger.info(f"Added new movie: {movie_data['title']} from {movie_data['source']}")
         return True # Newly added
@@ -281,7 +303,7 @@ def get_movie_by_url(url: str) -> dict | None:
     conn = sqlite3.connect('movies.db')
     c = conn.cursor()
     c.execute("""
-        SELECT title, url, source, image_url, category, description, release_year, average_rating, rating_count
+        SELECT title, url, source, image_url, category, description, release_year, average_rating, rating_count, genres
         FROM movies
         WHERE url = ?
     """, (url,))
@@ -297,6 +319,59 @@ def get_movie_by_url(url: str) -> dict | None:
             "description": row[5],
             "release_year": row[6],
             "average_rating": row[7],
-            "rating_count": row[8]
+            "rating_count": row[8],
+            "genres": row[9] # New: include genres
         }
     return None
+
+def add_favorite(user_id: int, movie_url: str) -> bool:
+    """Adds a movie to a user's favorites. Returns True if added, False if already exists."""
+    conn = sqlite3.connect('movies.db')
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO favorites (user_id, movie_url) VALUES (?, ?)", (user_id, movie_url))
+        conn.commit()
+        logger.info(f"User {user_id} added {movie_url} to favorites.")
+        return True
+    except sqlite3.IntegrityError:
+        logger.info(f"User {user_id} already has {movie_url} in favorites.")
+        return False
+    except Exception as e:
+        logger.error(f"Error adding favorite for user {user_id}, movie {movie_url}: {e}")
+        return False
+    finally:
+        conn.close()
+
+def remove_favorite(user_id: int, movie_url: str) -> bool:
+    """Removes a movie from a user's favorites. Returns True if removed, False if not found."""
+    conn = sqlite3.connect('movies.db')
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM favorites WHERE user_id = ? AND movie_url = ?", (user_id, movie_url))
+        conn.commit()
+        if c.rowcount > 0:
+            logger.info(f"User {user_id} removed {movie_url} from favorites.")
+            return True
+        else:
+            logger.info(f"User {user_id} did not have {movie_url} in favorites.")
+            return False
+    except Exception as e:
+        logger.error(f"Error removing favorite for user {user_id}, movie {movie_url}: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_favorites(user_id: int) -> list:
+    """Retrieves a list of favorite movies for a given user."""
+    conn = sqlite3.connect('movies.db')
+    c = conn.cursor()
+    c.execute("""
+        SELECT m.title, m.url, m.source, m.image_url, m.category, m.description, m.release_year, m.average_rating, m.rating_count, m.genres
+        FROM favorites f
+        JOIN movies m ON f.movie_url = m.url
+        WHERE f.user_id = ?
+        ORDER BY f.added_date DESC
+    """, (user_id,))
+    results = c.fetchall()
+    conn.close()
+    return results
