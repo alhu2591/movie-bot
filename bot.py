@@ -1,5 +1,6 @@
+# -*- coding: utf-8 -*-
 import subprocess
-import sys # تم إضافة هذا الاستيراد لحل مشكلة NameError
+import sys
 import os
 import re
 import sqlite3
@@ -13,7 +14,6 @@ from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQuer
 from flask import Flask
 from urllib.parse import urlparse, urlunparse
 from playwright.async_api import async_playwright
-import site # تم إضافة هذا الاستيراد لتحسين اكتشاف مسار المكتبات
 
 # --- Logging Setup ---
 import logging
@@ -51,9 +51,9 @@ def ensure_packages_installed():
     logger.info("Verifying critical imports...")
     try:
         # محاولة استيراد المكتبات الأساسية
-        import bs4 # تم تغيير هذا السطر من 'beautifulsoup4' إلى 'bs4'
+        import bs4
         import lxml
-        import python_telegram_bot
+        import telegram # تم تغيير هذا السطر من 'python_telegram_bot' إلى 'telegram'
         import aiohttp
         import schedule
         import playwright # تم إضافة playwright للتحقق
@@ -832,10 +832,9 @@ def main():
 
     logger.info("✅ البوت يعمل الآن مع 12 موقع سينمائي")
     logger.info("⏱️ تحديث الأفلام كل ساعة تلقائياً")
-    logger.info("� خادم Keep-Alive يعمل على المنفذ 8080")
+    logger.info("🌐 خادم Keep-Alive يعمل على المنفذ 8080")
     logger.info("🔄 استخدم /update لتحديث يدوي")
     application.run_polling()
 
 if __name__ == '__main__':
     main()
-
