@@ -39,7 +39,7 @@ def ensure_packages_installed():
     required_pip_packages = [
         "requests", "beautifulsoup4", "lxml", "python-telegram-bot"
     ]
-
+    
     # Aggressive uninstall to clear any conflicting packages
     logger.info("Attempting aggressive uninstallation of potentially conflicting packages...")
     for pkg in ["telegram", "python-telegram-bot", "requests", "beautifulsoup4", "lxml"]: # Removed 'playwright'
@@ -72,7 +72,7 @@ def ensure_packages_installed():
     try:
         from telegram import Update as _Update, InlineKeyboardButton as _InlineKeyboardButton, InlineKeyboardMarkup as _InlineKeyboardMarkup
         from telegram.ext import Application as _Application, CommandHandler as _CommandHandler, ContextTypes as _ContextTypes, CallbackQueryHandler as _CallbackQueryHandler
-
+        
         Update = _Update
         InlineKeyboardButton = _InlineKeyboardButton
         InlineKeyboardMarkup = _InlineKeyboardMarkup
@@ -123,7 +123,7 @@ def init_db():
                  description TEXT,
                  release_year INTEGER,
                  last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-
+    
     # محاولة إضافة الأعمدة إذا لم تكن موجودة
     try:
         c.execute("ALTER TABLE movies ADD COLUMN category TEXT")
@@ -136,19 +136,19 @@ def init_db():
     except sqlite3.OperationalError as e:
         if "duplicate column name" not in str(e):
             logger.error(f"Error altering movies table to add image_url column: {e}")
-
+            
     try:
         c.execute("ALTER TABLE movies ADD COLUMN description TEXT")
     except sqlite3.OperationalError as e:
         if "duplicate column name" not in str(e):
             logger.error(f"Error altering movies table to add description column: {e}")
-
+            
     try:
         c.execute("ALTER TABLE movies ADD COLUMN release_year INTEGER")
     except sqlite3.OperationalError as e:
         if "duplicate column name" not in str(e):
             logger.error(f"Error altering movies table to add release_year column: {e}")
-
+    
     # جدول المستخدمين مع تفضيلات التنبيهات
     c.execute('''CREATE TABLE IF NOT EXISTS users
                 (user_id INTEGER PRIMARY KEY,
@@ -159,7 +159,7 @@ def init_db():
                  receive_movies INTEGER DEFAULT 1,    -- 1 for true, 0 for false
                  receive_series INTEGER DEFAULT 1,
                  receive_anime INTEGER DEFAULT 1)''')
-
+    
     # محاولة إضافة أعمدة التفضيلات إذا لم تكن موجودة
     for col in ['receive_movies', 'receive_series', 'receive_anime']:
         try:
@@ -229,7 +229,7 @@ def clean_title(title):
 def deduce_category(title, url):
     title_lower = title.lower()
     url_lower = url.lower()
-
+    
     if "مسلسل" in title_lower or "series" in url_lower or "مسلسلات" in url_lower:
         return "مسلسل"
     if "انمي" in title_lower or "anime" in url_lower or "أنمي" in title_lower:
@@ -246,7 +246,12 @@ def extract_detailed_movie_info_requests(movie_url: str, movie_title_for_ref: st
         }
         response = requests.get(movie_url, headers=headers, timeout=30)
         response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-        movie_soup = BeautifulSoup(response.content, 'lxml')
+        
+        try:
+            movie_soup = BeautifulSoup(response.content, 'lxml')
+        except Exception as bs_e:
+            logger.warning(f"LXML parser not available for {movie_url}, falling back to html.parser: {bs_e}")
+            movie_soup = BeautifulSoup(response.content, 'html.parser')
 
         # 1. Try to get description from meta tag
         meta_description = movie_soup.find('meta', attrs={'name': 'description'})
@@ -254,7 +259,7 @@ def extract_detailed_movie_info_requests(movie_url: str, movie_title_for_ref: st
             description = meta_description['content'].strip()
             if len(description) < 100 or "مشاهدة وتحميل" in description:
                 description = "" 
-
+        
         # 2. If meta tag failed, try common description selectors
         if not description:
             for selector in [
@@ -268,7 +273,7 @@ def extract_detailed_movie_info_requests(movie_url: str, movie_title_for_ref: st
                     if len(text) > 50 and len(text) < 5000: 
                         description = text
                         break
-
+        
         # 3. Clean the description from promotional phrases
         if description:
             promo_phrases = [
@@ -291,10 +296,10 @@ def extract_detailed_movie_info_requests(movie_url: str, movie_title_for_ref: st
                 r'أفلام202[0-9]|مسلسلات202[0-9]|أنمي202[0-9]', 
                 r'اونلاين'
             ]
-
+            
             for phrase in promo_phrases:
                 description = re.sub(phrase, '', description, flags=re.IGNORECASE | re.DOTALL).strip()
-
+            
             description = re.sub(r'^[^\w\s\u0600-\u06FF]+', '', description).strip()
             description = re.sub(r'[^\w\s\u0600-\u06FF]+$', '', description).strip()
 
@@ -303,7 +308,7 @@ def extract_detailed_movie_info_requests(movie_url: str, movie_title_for_ref: st
                 description = re.sub(r'^[^\w\s\u0600-\u06FF]+', '', description).strip() 
 
             description = re.sub(r'\s{2,}', ' ', description).strip()
-
+            
             if len(description) > 500: 
                 description = description[:497] + "..." 
 
@@ -318,7 +323,7 @@ def extract_detailed_movie_info_requests(movie_url: str, movie_title_for_ref: st
                         release_year = int(year_match.group(1))
                     except ValueError:
                         release_year = None
-
+        
         if year_tag and not release_year: # If year_tag exists but regex didn't catch it
             year_match = re.search(r'(\d{4})', year_tag.get_text(strip=True))
             if year_match:
@@ -332,7 +337,7 @@ def extract_detailed_movie_info_requests(movie_url: str, movie_title_for_ref: st
         logger.warning(f"⚠️ خطأ في جلب تفاصيل الفيلم من {movie_url} باستخدام requests: {e}")
     except Exception as e:
         logger.warning(f"⚠️ خطأ غير متوقع في جلب تفاصيل الفيلم من {movie_url}: {e}")
-
+    
     return description, release_year
 
 
@@ -347,7 +352,7 @@ def parse_wecima(soup):
                 logger.debug(f"Wecima: Skipping item due to missing link or href: {item.prettify()}")
                 continue
             link = link_tag["href"]
-
+            
             title_tag = item.select_one("strong.hasyear") or item.select_one("img")
             raw_title = ""
             if title_tag:
@@ -365,7 +370,7 @@ def parse_wecima(soup):
                 match = re.search(r'url\((.*?)\)', bg_style_tag['data-lazy-style'])
                 if match:
                     image_url = match.group(1).strip("'\"")
-
+            
             if not image_url:
                 img_tag = item.select_one("img")
                 if img_tag:
@@ -389,19 +394,19 @@ def parse_topcinema(soup):
                 logger.debug(f"TopCinema: Skipping item due to missing link or href: {item.prettify()}")
                 continue
             link = link_tag["href"]
-
+            
             title_tag = item.select_one("h2.Title")
             raw_title = title_tag.get_text(strip=True) if title_tag else "N/A"
             if not raw_title or raw_title == "N/A":
                 logger.debug(f"TopCinema: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
                 raw_title = "عنوان غير متوفر"
-
+            
             img_tag = item.select_one("img")
             image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
             if not image_url:
                 logger.debug(f"TopCinema: Image URL not found for title '{raw_title}' (link: {link}) - Item HTML: {item.prettify()}")
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
-
+            
             movies.append({"title": clean_title(raw_title), "url": link, "image_url": image_url, "source": "TopCinema"})
         except Exception as e:
             logger.error(f"❌ خطأ في تحليل عنصر TopCinema: {e} - Item HTML causing error: {item.prettify()}")
@@ -417,16 +422,16 @@ def parse_cimaclub(soup):
                 logger.debug(f"CimaClub: Skipping item due to missing link or href: {item.prettify()}")
                 continue
             link = link_tag["href"]
-
+            
             raw_title = "عنوان غير متوفر" # Default value
-
+            
             # Attempt 1: Get title from h2 within inner--title
             title_h2_tag = item.select_one(".inner--title h2")
             if title_h2_tag:
                 extracted_title = title_h2_tag.get_text(strip=True)
                 if extracted_title:
                     raw_title = extracted_title
-
+            
             # Attempt 2: If h2 failed, try img alt attribute
             if raw_title == "عنوان غير متوفر":
                 img_tag_for_title = item.select_one("div.Poster img")
@@ -434,7 +439,7 @@ def parse_cimaclub(soup):
                     extracted_title = img_tag_for_title.get("alt", "")
                     if extracted_title:
                         raw_title = extracted_title
-
+            
             # Attempt 3: If img alt failed, try link title attribute
             if raw_title == "عنوان غير متوفر":
                 extracted_title = link_tag.get("title", "")
@@ -450,7 +455,7 @@ def parse_cimaclub(soup):
             if not image_url:
                 logger.debug(f"CimaClub: Image URL not found for title '{raw_title}' (link: {link}) - Item HTML: {item.prettify()}")
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image" # Placeholder
-
+            
             movies.append({"title": clean_title(raw_title), "url": link, "image_url": image_url, "source": "CimaClub"})
         except Exception as e:
             logger.error(f"❌ خطأ في تحليل عنصر CimaClub: {e} - Item HTML causing error: {item.prettify()}")
@@ -466,19 +471,19 @@ def parse_tuktukcima(soup):
                 logger.debug(f"TukTukCima: Skipping item due to missing link or href: {item.prettify()}")
                 continue
             link = link_tag["href"]
-
+            
             title_tag = item.select_one("h2.Title")
             raw_title = title_tag.get_text(strip=True) if title_tag else "N/A"
             if not raw_title or raw_title == "N/A":
                 logger.debug(f"TukTukCima: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
                 raw_title = "عنوان غير متوفر"
-
+            
             img_tag = item.select_one("img")
             image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
             if not image_url:
                 logger.debug(f"TukTukCima: Image URL not found for title '{raw_title}' (link: {link}) - Item HTML: {item.prettify()}")
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
-
+            
             movies.append({"title": clean_title(raw_title), "url": link, "image_url": image_url, "source": "TukTukCima"})
         except Exception as e:
             logger.error(f"❌ خطأ في تحليل عنصر TukTukCima: {e} - Item HTML causing error: {item.prettify()}")
@@ -494,19 +499,19 @@ def parse_egy_onl(soup):
                 logger.debug(f"EgyBest: Skipping item due to missing link or href: {item.prettify()}")
                 continue
             link = link_tag["href"]
-
+            
             # العنوان موجود في alt للصورة
             title_tag = item.select_one("img")
             raw_title = title_tag.get("alt", "N/A") if title_tag else "N/A"
             if not raw_title or raw_title == "N/A":
                 logger.debug(f"EgyBest: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
                 raw_title = "عنوان غير متوفر"
-
+            
             image_url = title_tag.get("data-src") or title_tag.get("src") if title_tag else None
             if not image_url:
                 logger.debug(f"EgyBest: Image URL not found for title '{raw_title}' (link: {link}) - Item HTML: {item.prettify()}")
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
-
+            
             movies.append({"title": clean_title(raw_title), "url": link, "image_url": image_url, "source": "EgyBest"})
         except Exception as e:
             logger.error(f"❌ خطأ في تحليل عنصر EgyBest: {e} - Item HTML causing error: {item.prettify()}")
@@ -523,7 +528,7 @@ def parse_mycima(soup):
                 logger.debug(f"MyCima: Skipping item due to missing link or href: {item.prettify()}")
                 continue
             link = link_tag["href"]
-
+            
             title_tag = item.select_one("strong.hasyear") or item.select_one("img")
             raw_title = ""
             if title_tag:
@@ -541,7 +546,7 @@ def parse_mycima(soup):
                 match = re.search(r'url\((.*?)\)', bg_style_tag['data-lazy-style'])
                 if match:
                     image_url = match.group(1).strip("'\"")
-
+            
             if not image_url:
                 img_tag = item.select_one("img")
                 if img_tag:
@@ -565,7 +570,7 @@ def parse_akoam(soup):
                 logger.debug(f"Akoam: Skipping item due to missing link or href: {item.prettify()}")
                 continue
             link = link_tag["href"]
-
+            
             title_tag = item.select_one("h2.Title") or item.select_one("img") # Title can be in h2 or img alt
             raw_title = ""
             if title_tag:
@@ -576,13 +581,13 @@ def parse_akoam(soup):
             if not raw_title or raw_title == "N/A":
                 logger.debug(f"Akoam: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
                 raw_title = "عنوان غير متوفر"
-
+            
             img_tag = item.select_one("img")
             image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
             if not image_url:
                 logger.debug(f"Akoam: Image URL not found for title '{raw_title}' (link: {link}) - Item HTML: {item.prettify()}")
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
-
+            
             movies.append({"title": clean_title(raw_title), "url": link, "image_url": image_url, "source": "Akoam"})
         except Exception as e:
             logger.error(f"❌ خطأ في تحليل عنصر Akoam: {e} - Item HTML causing error: {item.prettify()}")
@@ -598,19 +603,19 @@ def parse_shahid4u(soup):
                 logger.debug(f"Shahid4u: Skipping item due to missing link or href: {item.prettify()}")
                 continue
             link = link_tag["href"]
-
+            
             title_tag = item.select_one("h2.MovieTitle")
             raw_title = title_tag.get_text(strip=True) if title_tag else "N/A"
             if not raw_title or raw_title == "N/A":
                 logger.debug(f"Shahid4u: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
                 raw_title = "عنوان غير متوفر"
-
+            
             img_tag = item.select_one("img")
             image_url = img_tag.get("src") if img_tag else None # Shahid4u يستخدم src مباشرة
             if not image_url:
                 logger.debug(f"Shahid4u: Image URL not found for title '{raw_title}' (link: {link}) - Item HTML: {item.prettify()}")
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
-
+            
             movies.append({"title": clean_title(raw_title), "url": link, "image_url": image_url, "source": "Shahid4u"})
         except Exception as e:
             logger.error(f"❌ خطأ في تحليل عنصر Shahid4u: {e} - Item HTML causing error: {item.prettify()}")
@@ -626,19 +631,19 @@ def parse_aflamco(soup):
                 logger.debug(f"Aflamco: Skipping item due to missing link or href: {item.prettify()}")
                 continue
             link = link_tag["href"]
-
+            
             title_tag = item.select_one("h2.ModuleTitle")
             raw_title = title_tag.get_text(strip=True) if title_tag else "N/A"
             if not raw_title or raw_title == "N/A":
                 logger.debug(f"Aflamco: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
                 raw_title = "عنوان غير متوفر"
-
+            
             img_tag = item.select_one("img")
             image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
             if not image_url:
                 logger.debug(f"Aflamco: Image URL not found for title '{raw_title}' (link: {link}) - Item HTML: {item.prettify()}")
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
-
+            
             movies.append({"title": clean_title(raw_title), "url": link, "image_url": image_url, "source": "Aflamco"})
         except Exception as e:
             logger.error(f"❌ خطأ في تحليل عنصر Aflamco: {e} - Item HTML causing error: {item.prettify()}")
@@ -654,19 +659,19 @@ def parse_cima4u(soup):
                 logger.debug(f"Cima4u: Skipping item due to missing link or href: {item.prettify()}")
                 continue
             link = link_tag["href"]
-
+            
             title_tag = item.select_one("h2.Title")
             raw_title = title_tag.get_text(strip=True) if title_tag else "N/A"
             if not raw_title or raw_title == "N/A":
                 logger.debug(f"Cima4u: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
                 raw_title = "عنوان غير متوفر"
-
+            
             img_tag = item.select_one("img")
             image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
             if not image_url:
                 logger.debug(f"Cima4u: Image URL not found for title '{raw_title}' (link: {link}) - Item HTML: {item.prettify()}")
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
-
+            
             movies.append({"title": clean_title(raw_title), "url": link, "image_url": image_url, "source": "Cima4u"})
         except Exception as e:
             logger.error(f"❌ خطأ في تحليل عنصر Cima4u: {e} - Item HTML causing error: {item.prettify()}")
@@ -682,19 +687,19 @@ def parse_fushaar(soup):
                 logger.debug(f"Fushaar: Skipping item due to missing link or href: {item.prettify()}")
                 continue
             link = link_tag["href"]
-
+            
             title_tag = item.select_one("h2.Title")
             raw_title = title_tag.get_text(strip=True) if title_tag else "N/A"
             if not raw_title or raw_title == "N/A":
                 logger.debug(f"Fushaar: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
                 raw_title = "عنوان غير متوفر"
-
+            
             img_tag = item.select_one("img")
             image_url = img_tag.get("data-lazy-src") or img_tag.get("src") if img_tag else None
             if not image_url:
                 logger.debug(f"Fushaar: Image URL not found for title '{raw_title}' (link: {link}) - Item HTML: {item.prettify()}")
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
-
+            
             movies.append({"title": clean_title(raw_title), "url": link, "image_url": image_url, "source": "Fushaar"})
         except Exception as e:
             logger.error(f"❌ Error parsing Fushaar item: {e} - Item HTML causing error: {item.prettify()}")
@@ -710,19 +715,19 @@ def parse_aflaam(soup):
                 logger.debug(f"Aflaam: Skipping item due to missing link or href: {item.prettify()}")
                 continue
             link = link_tag["href"]
-
+            
             title_tag = item.select_one("h3.entry-title")
             raw_title = title_tag.get_text(strip=True) if title_tag else "N/A"
             if not raw_title or raw_title == "N/A":
                 logger.debug(f"Aflaam: Title not found or N/A for link {link} - Item HTML: {item.prettify()}")
                 raw_title = "عنوان غير متوفر"
-
+            
             img_tag = item.select_one("picture img.lazy") 
             image_url = img_tag.get("data-src") or img_tag.get("src") if img_tag else None
             if not image_url:
                 logger.debug(f"Aflaam: Image URL not found for title '{raw_title}' (link: {link}) - Item HTML: {item.prettify()}")
                 image_url = "https://placehold.co/200x300/cccccc/333333?text=No+Image"
-
+            
             movies.append({"title": clean_title(raw_title), "url": link, "image_url": image_url, "source": "Aflaam"})
         except Exception as e:
             logger.error(f"❌ Error parsing Aflaam item: {e} - Item HTML causing error: {item.prettify()}")
@@ -754,17 +759,22 @@ def scrape_single_main_page_and_parse(scraper: dict):
     site_name = scraper["name"]
     site_url = scraper["url"]
     parser_func = scraper["parser"]
-
+    
     logger.info(f"جارٍ فحص الصفحة الرئيسية لـ: {site_name} - {site_url}")
-
+    
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
         }
         response = requests.get(site_url, headers=headers, timeout=60) # Increased timeout
         response.raise_for_status() # Raise an exception for HTTP errors
-
-        soup = BeautifulSoup(response.content, 'lxml') 
+        
+        try:
+            soup = BeautifulSoup(response.content, 'lxml') 
+        except Exception as bs_e:
+            logger.warning(f"LXML parser not available for {site_name}, falling back to html.parser: {bs_e}")
+            soup = BeautifulSoup(response.content, 'html.parser')
+        
         movies = parser_func(soup)
 
         if movies:
@@ -783,7 +793,7 @@ def scrape_single_main_page_and_parse(scraper: dict):
 def scrape_movies_and_get_new(): # ليست دالة async بعد الآن
     newly_added_movies = [] 
     total_processed_count = 0 
-
+    
     conn = sqlite3.connect('movies.db') 
     c = conn.cursor()
 
@@ -919,7 +929,7 @@ async def send_new_movies(context: ContextTypes.DEFAULT_TYPE):
                    (movie['category'] == 'مسلسل' and receive_series) or \
                    (movie['category'] == 'أنمي' and receive_anime):
                     filtered_movies.append(movie)
-
+            
             if not filtered_movies:
                 continue 
 
@@ -942,12 +952,12 @@ async def send_new_movies(context: ContextTypes.DEFAULT_TYPE):
                     f"🎬 <b>المصدر:</b> {movie['source']}\n"
                     f"🎬 <b>الفئة:</b> {movie['category']}\n"
                 )
-
+                
                 if movie['description']:
                     description_text = movie['description'].strip()
                     if description_text:
                         photo_caption_text += f"\n📝 <b>الوصف:</b> {description_text}\n"
-
+                
                 keyboard = [[InlineKeyboardButton("اضغط هنا للمشاهدة", url=movie["url"])]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -977,7 +987,7 @@ async def send_new_movies(context: ContextTypes.DEFAULT_TYPE):
                     if movie['description']:
                         fallback_text += f"\n📝 <b>الوصف:</b> {movie['description'].strip()}\n"
                     fallback_text += f'\n🔗 <b>رابط المشاهدة:</b> <a href="{movie["url"]}">اضغط هنا للمشاهدة</a>'
-
+                    
                     await context.bot.send_message(
                         chat_id=user_id,
                         text=fallback_text,
@@ -1034,7 +1044,7 @@ async def main_menu_internal(chat_id: int, context: ContextTypes.DEFAULT_TYPE, m
 # --- معالج أمر /settings (يمكن استدعاؤه لتعديل الرسالة أو إرسالها لأول مرة) ---
 async def settings_command_internal(chat_id: int, context: ContextTypes.DEFAULT_TYPE, message_id: int = None, edit_mode: bool = False):
     user_prefs = get_user_preferences(chat_id)
-
+    
     movies_status = "✅ مفعل" if user_prefs["movies"] else "❌ معطل"
     series_status = "✅ مفعل" if user_prefs["series"] else "❌ معطل"
     anime_status = "✅ مفعل" if user_prefs["anime"] else "❌ معطل"
@@ -1089,7 +1099,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         pref_type = query.data.replace('toggle_', '')
         current_prefs = get_user_preferences(chat_id)
         new_value = 0 if current_prefs.get(pref_type) else 1
-
+        
         if update_user_preference(chat_id, f"receive_{pref_type}", new_value):
             await settings_command_internal(chat_id, context, query.message.message_id, edit_mode=True)
         else:
@@ -1138,19 +1148,19 @@ async def show_site_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
             last_scraped_str = last_scraped_dt.strftime('%Y-%m-%d %H:%M')
             message += f"<b>{site_name}</b>: آخر جلب: {last_scraped_str}, الحالة: {status}\n"
-
+    
     await update.message.reply_text(message, parse_mode='HTML')
 
 # --- دالة لتنظيف الأفلام القديمة من قاعدة البيانات ---
 def cleanup_old_movies():
     conn = sqlite3.connect('movies.db')
     c = conn.cursor()
-
+    
     # حذف الأفلام الأقدم من 90 يوماً
     ninety_days_ago = datetime.now() - timedelta(days=90)
     c.execute("DELETE FROM movies WHERE last_updated < ?", (ninety_days_ago,))
     deleted_count = c.rowcount
-
+    
     # تنفيذ VACUUM لإعادة استصلاح المساحة بعد الحذف
     try:
         c.execute("VACUUM")
@@ -1182,7 +1192,7 @@ def schedule_job(application):
 
     # جدولة مهمة جمع وإرسال الأفلام الجديدة كل 6 ساعات.
     schedule.every(6).hours.do(lambda: asyncio.run_coroutine_threadsafe(run_async_task_wrapper_send_new_movies(), loop))
-
+    
     # جدولة تنظيف قاعدة البيانات يومياً في وقت معين (مثلاً 3 صباحاً)
     schedule.every().day.at("03:00").do(cleanup_old_movies) 
 
@@ -1202,10 +1212,10 @@ def schedule_job(application):
 # --- تنفيذ البوت الرئيسي ---
 def main():
     init_db() 
-
+    
     global application
     application = Application.builder().token(TOKEN).build()
-
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("sitestatus", show_site_status)) # Admin command
     application.add_handler(CallbackQueryHandler(button_callback_handler)) 
