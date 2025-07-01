@@ -1,8 +1,7 @@
-python-telegram-bot==20.7
-flask
-schedule
-beautifulsoup4
-lxml
-aiohttp
-playwright
-requests
+    beautifulsoup4
+    lxml
+    python-telegram-bot==20.7
+    aiohttp
+    playwright
+    flask
+    schedule
